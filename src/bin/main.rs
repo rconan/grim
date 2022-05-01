@@ -557,10 +557,9 @@ async fn main() -> anyhow::Result<()> {
             let mut agws_sh24 = ceo::OpticalModel::builder()
                 .gmt(gmt_builder.clone())
                 .source(SOURCE::new())
-                .sensor_builder(TT7::<crseo::Diffractive>::new())
                 .atmosphere(atm.clone())
                 .sampling_period(tau)
-                .build()?;
+                .build_with(TT7::<crseo::Diffractive>::new())?;
             use calibrations::Mirror;
             use calibrations::Segment::*;
             // GMT 2 WFS
@@ -606,10 +605,9 @@ async fn main() -> anyhow::Result<()> {
             let mut agws_sh48 = ceo::OpticalModel::builder()
                 .gmt(gmt_builder)
                 .source(SOURCE::new().on_ring(6f32.from_arcmin()))
-                .sensor_builder(SH48::<crseo::Diffractive>::new().n_sensor(n_sh48))
                 .atmosphere(atm)
                 .sampling_period(tau)
-                .build()?;
+                .build_with(SH48::<crseo::Diffractive>::new().n_sensor(n_sh48))?;
             let filename = format!("sh48x{}-diff_2_m1-modes.bin", n_sh48);
             let poke_mat_file = Path::new(&filename);
             let wfs_2_dof: na::DMatrix<f64> = if poke_mat_file.is_file() {

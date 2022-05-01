@@ -1,7 +1,4 @@
-use crseo::{
-    pssn::TelescopeError, Builder, Geometric, ShackHartmann, ShackHartmannBuilder, ATMOSPHERE, GMT,
-    PSSN, SOURCE,
-};
+use crseo::{pssn::TelescopeError, Builder, ShackHartmannBuilder, ATMOSPHERE, GMT, PSSN, SOURCE};
 use dos_actors::{
     clients::{arrow_client::Arrow, ceo, gmt_state::GmtState},
     prelude::*,
@@ -36,11 +33,10 @@ async fn main() -> anyhow::Result<()> {
     let bench = ceo::OpticalModel::builder()
         .gmt(gmt_builder)
         .source(SOURCE::new()) //.zenith_azimuth(vec![6f32.from_arcmin()], vec![45f32.to_radians()]))
-        .sensor_builder(ShackHartmannBuilder::<crseo::Diffractive>::new())
         .atmosphere(atm.clone())
         .pssn(PSSN::<TelescopeError>::new())
         .sampling_period(tau)
-        .build()?
+        .build_with(ShackHartmannBuilder::<crseo::Diffractive>::new())?
         .into_arcx();
     let mut on_axis = Actor::<_, 1, EXPOSURE_RATE>::new(bench.clone()).name("ON-AXIS GMT");
 

@@ -1,4 +1,4 @@
-use crseo::{Builder, Geometric, ShackHartmann, ShackHartmannBuilder, ATMOSPHERE};
+use crseo::{Builder, ATMOSPHERE};
 use dos_actors::{
     clients::{arrow_client::Arrow, ceo},
     prelude::*,
@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let tau = (sim_sampling_frequency as f64).recip();
     let mut on_axis: Actor<_> = (
-        ceo::OpticalModel::<ShackHartmann<Geometric>, ShackHartmannBuilder<Geometric>>::builder()
+        ceo::OpticalModel::builder()
             .atmosphere(atm)
             .sampling_period(tau)
             .build()?,
