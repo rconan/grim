@@ -557,9 +557,19 @@ async fn main() -> anyhow::Result<()> {
             let mut agws_sh24 = ceo::OpticalModel::builder()
                 .gmt(gmt_builder.clone())
                 .source(SOURCE::new())
-                .atmosphere(atm.clone())
-                .sampling_period(tau)
-                .build_with(TT7::<crseo::Diffractive>::new())?;
+                .options(vec![
+                    ceo::OpticalModelOptions::ShackHartmann {
+                        options: ceo::ShackHartmannOptions::Diffractive(
+                            *TT7::<crseo::Diffractive>::new(),
+                        ),
+                        flux_threshold: 0.5,
+                    },
+                    ceo::OpticalModelOptions::Atmosphere {
+                        builder: atm.clone(),
+                        time_step: tau,
+                    },
+                ])
+                .build()?;
             use calibrations::Mirror;
             use calibrations::Segment::*;
             // GMT 2 WFS
@@ -605,9 +615,19 @@ async fn main() -> anyhow::Result<()> {
             let mut agws_sh48 = ceo::OpticalModel::builder()
                 .gmt(gmt_builder)
                 .source(SOURCE::new().on_ring(6f32.from_arcmin()))
-                .atmosphere(atm)
-                .sampling_period(tau)
-                .build_with(SH48::<crseo::Diffractive>::new().n_sensor(n_sh48))?;
+                .options(vec![
+                    ceo::OpticalModelOptions::ShackHartmann {
+                        options: ceo::ShackHartmannOptions::Diffractive(
+                            *SH48::<crseo::Diffractive>::new().n_sensor(n_sh48),
+                        ),
+                        flux_threshold: 0.5,
+                    },
+                    ceo::OpticalModelOptions::Atmosphere {
+                        builder: atm,
+                        time_step: tau,
+                    },
+                ])
+                .build()?;
             let filename = format!("sh48x{}-diff_2_m1-modes.bin", n_sh48);
             let poke_mat_file = Path::new(&filename);
             let wfs_2_dof: na::DMatrix<f64> = if poke_mat_file.is_file() {

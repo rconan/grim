@@ -29,8 +29,10 @@ async fn main() -> anyhow::Result<()> {
     let tau = (sim_sampling_frequency as f64).recip();
     let mut on_axis: Actor<_> = (
         ceo::OpticalModel::builder()
-            .atmosphere(atm)
-            .sampling_period(tau)
+            .options(vec![ceo::OpticalModelOptions::Atmosphere {
+                builder: atm.clone(),
+                time_step: tau,
+            }])
             .build()?,
         "ON-AXIS GMT",
     )
