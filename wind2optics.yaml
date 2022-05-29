@@ -1,0 +1,129 @@
+Resources:
+  WindLoadLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties: 
+      LaunchTemplateData: 
+        EbsOptimized: false
+        KeyName: awscalifornia
+        UserData:
+          Fn::Base64:
+            !Sub
+            - |
+                MIME-Version: 1.0
+                Content-Type: multipart/mixed; boundary="==MYBOUNDARY=="
+
+                --==MYBOUNDARY==
+                Content-Type: text/cloud-config; charset="us-ascii"
+                
+                runcmd:
+                  - amazon-linux-extras install -y lustre2.10
+                  - mkdir -p /fsx
+                  - mount -t lustre -o defaults,_netdev,flock,user_xattr,noatime ${fsx_id}.fsx.us-west-1.amazonaws.com@tcp:/${mount_name} /fsx 
+                  
+                --==MYBOUNDARY==--
+            - fsx_id: "fs-04a3b016c7265f716"
+              mount_name: "sexwhbmv"
+      LaunchTemplateName: WindLoadTemplate
+  WindLoadCompute:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties: 
+      ComputeEnvironmentName: WindLoadCompute
+      ComputeResources: 
+        AllocationStrategy: BEST_FIT
+        DesiredvCpus: 32
+        Ec2Configuration:
+          - ImageType: ECS_AL2
+        Ec2KeyPair: awscalifornia
+        InstanceRole: arn:aws:iam::378722409401:instance-profile/ecsInstanceRole
+        InstanceTypes:
+          - optimal
+        LaunchTemplate:
+          LaunchTemplateId: !Ref WindLoadLaunchTemplate
+          Version: $Default
+        MaxvCpus: 256
+        MinvCpus: 0
+        SecurityGroupIds:
+          - sg-216fb144
+        Subnets:
+          - subnet-f0dbc9b6
+        Type: EC2
+      ServiceRole: arn:aws:iam::378722409401:role/service-role/AWSBatchServiceRole
+      State: ENABLED
+      Type: MANAGED
+  WindLoadJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties: 
+      ComputeEnvironmentOrder: 
+        - ComputeEnvironment: !Ref WindLoadCompute
+          Order: 1
+      Priority: 1
+      JobQueueName: WindJobs
+      State: ENABLED
+  WindLoadingJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties: 
+      ContainerProperties: 
+        Command:
+          - /usr/local/bin/wind_loading
+        Environment:
+          - Name: FEM_REPO
+            Value: /fsx/20211103_2333_MT_mount_zen_30_m1HFN_CFD/
+          - Name: CFD_REPO
+            Value: /fsx/
+          - Name: DURATION
+            Value: 40
+          - Name: LOOP
+            Value: ASM
+          - Name: RUST_LOG
+            Value: info
+        Image: 378722409401.dkr.ecr.us-west-1.amazonaws.com/gmto.im/wind2optics:latest
+        MountPoints:
+          - ContainerPath: /fsx
+            SourceVolume: fsx
+        ResourceRequirements:
+          - Type: VCPU
+            Value: '32'
+          - Type: MEMORY
+            Value: '3000'
+        Volumes:
+          - Host:
+              SourcePath: /fsx
+            Name: fsx
+      JobDefinitionName: WindLoadingJob
+      PlatformCapabilities: 
+        - EC2
+      Type: container
+  Wind2OpticsJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties: 
+      ContainerProperties: 
+        Command:
+          - /usr/local/bin/main
+        Environment:
+          - Name: FEM_REPO
+            Value: /fsx/20211103_2333_MT_mount_zen_30_m1HFN_CFD/
+          - Name: CFD_REPO
+            Value: /fsx/
+          - Name: DURATION
+            Value: 40
+          - Name: LOOP
+            Value: ASM
+          - Name: RUST_LOG
+            Value: info
+        Image: 378722409401.dkr.ecr.us-west-1.amazonaws.com/gmto.im/wind2optics:latest
+        MountPoints:
+          - ContainerPath: /fsx
+            SourceVolume: fsx
+        ResourceRequirements:
+          - Type: VCPU
+            Value: '4'
+          - Type: MEMORY
+            Value: '3000'
+        Volumes:
+          - Host:
+              SourcePath: /fsx
+            Name: fsx
+      JobDefinitionName: Wind2OpticsJob
+      PlatformCapabilities: 
+        - EC2
+      Type: container

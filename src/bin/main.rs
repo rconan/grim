@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
     const M1_RATE: usize = 10;
     assert_eq!(sim_sampling_frequency / M1_RATE, 100); // Hz
 
-    const SH48_RATE: usize = 30000;
+    const SH48_RATE: usize = 30_000;
     assert_eq!(SH48_RATE / sim_sampling_frequency, 30); // Seconds
 
     const FSM_RATE: usize = 5;
@@ -244,12 +244,17 @@ async fn main() -> anyhow::Result<()> {
             .build::<D, MountEncoders>()
             .into_input(&mut mount);
         fem.add_output()
+            .bootstrap()
             .build::<D, OSSM1Lcl>()
             .into_input(&mut sink);
         fem.add_output()
+            .bootstrap()
             .build::<D, MCM2Lcl6D>()
             .into_input(&mut sink);
-        fem.add_output().build::<D, M1modes>().into_input(&mut sink);
+        fem.add_output()
+            .bootstrap()
+            .build::<D, M1modes>()
+            .into_input(&mut sink);
 
         Model::new(vec![
             Box::new(source),
@@ -484,6 +489,7 @@ async fn main() -> anyhow::Result<()> {
             .build::<D, MountEncoders>()
             .into_input(&mut mount);
         fem.add_output()
+            .bootstrap()
             .build::<D, OSSHardpointD>()
             .into_input(&mut m1_hp_loadcells);
 
@@ -681,6 +687,7 @@ async fn main() -> anyhow::Result<()> {
         let mut agws_sh48: Actor<_, 1, SH48_RATE> = Actor::new(gmt_agws_sh48.clone()).name(name);
 
         fem.add_output()
+            .bootstrap()
             .multiplex(3)
             .unbounded()
             .build::<D, OSSM1Lcl>()
@@ -688,6 +695,7 @@ async fn main() -> anyhow::Result<()> {
             .into_input(&mut agws_sh48)
             .into_input(&mut sink);
         fem.add_output()
+            .bootstrap()
             .multiplex(3)
             .unbounded()
             .build::<D, MCM2Lcl6D>()
@@ -695,6 +703,7 @@ async fn main() -> anyhow::Result<()> {
             .into_input(&mut agws_sh48)
             .into_input(&mut sink);
         fem.add_output()
+            .bootstrap()
             .multiplex(3)
             .unbounded()
             .build::<D, M1modes>()
