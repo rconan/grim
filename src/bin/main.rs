@@ -1,15 +1,9 @@
-use crseo::{calibrations, Builder, Calibration, ATMOSPHERE, GMT, SH24 as TT7, SH48, SOURCE};
 use dos_actors::{
     clients::{
         arrow_client::Arrow,
-        ceo,
         ceo::M1modes,
-        fsm::*,
-        m1::*,
         mount::{Mount, MountEncoders, MountSetPoint, MountTorques},
         windloads,
-        windloads::{WindLoads::*, CS},
-        Integrator,
     },
     prelude::*,
 };
@@ -18,19 +12,9 @@ use fem::{
     fem_io::*,
     FEM,
 };
-use linya::{Bar, Progress};
-use lom::{Loader, LoaderTrait, OpticalSensitivities, OpticalSensitivity};
 use nalgebra as na;
 use parse_monitors::cfd;
-use skyangle::Conversion;
-use std::{
-    env,
-    fs::File,
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use tokio::sync::Mutex;
+use std::{env, fs::File, path::Path};
 
 fn fig_2_mode(sid: u32) -> na::DMatrix<f64> {
     let root_env = env::var("M1CALIBRATION").unwrap_or_else(|_| ".".to_string());
@@ -63,142 +47,128 @@ async fn main() -> anyhow::Result<()> {
     const FSM_RATE: usize = 5;
     assert_eq!(sim_sampling_frequency / FSM_RATE, 200); // Hz
 
-    type D = Vec<f64>;
-
     let n_sh48_exposure = env::var("SH48_N_STEP")?.parse::<usize>()?;
     let sim_duration = (CFD_DELAY + n_sh48_exposure * SH48_RATE / sim_sampling_frequency) as f64;
     log::info!("Simulation duration: {:6.3}s", sim_duration);
 
-    let loads = vec![
-        TopEnd,
-        M2Baffle,
-        Trusses,
-        M1Baffle,
-        MirrorCovers,
-        LaserGuideStars,
-        CRings,
-        GIR,
-        Platforms,
-    ];
+    let (cfd_loads, state_space) = {
+        use dos_actors::clients::windloads::WindLoads::*;
+        let loads = vec![
+            TopEnd,
+            M2Baffle,
+            Trusses,
+            M1Baffle,
+            MirrorCovers,
+            LaserGuideStars,
+            CRings,
+            GIR,
+            Platforms,
+        ];
+        let mut fem = FEM::from_env()?.static_from_env()?;
+        let n_io = (fem.n_inputs(), fem.n_outputs());
+        //println!("{}", fem);
+        //println!("{}", fem);
+        let cfd_case = cfd::CfdCase::<2021>::colloquial(30, 0, "os", 7)?;
+        println!("CFD CASE ({}Hz): {}", cfd_sampling_frequency, cfd_case);
+        let cfd_path = cfd::Baseline::<2021>::path().join(cfd_case.to_string());
 
-    let mut fem = FEM::from_env()?.static_from_env()?;
-    let n_io = (fem.n_inputs(), fem.n_outputs());
-    //println!("{}", fem);
-    fem.filter_inputs_by(&[0], |x| {
-        loads
-            .iter()
-            .flat_map(|x| x.fem())
-            .fold(false, |b, p| b || x.descriptions.contains(&p))
-    });
-    let locations: Vec<CS> = fem.inputs[0]
-        .as_ref()
-        .unwrap()
-        .get_by(|x| Some(CS::OSS(x.properties.location.as_ref().unwrap().clone())))
-        .into_iter()
-        .step_by(6)
-        .collect();
-    //println!("{}", fem);
+        let cfd_loads =
+            windloads::CfdLoads::foh(cfd_path.to_str().unwrap(), sim_sampling_frequency)
+                .duration(sim_duration as f64)
+                //.time_range((200f64, 340f64))
+                //.nodes(loads.iter().flat_map(|x| x.keys()).collect(), locations)
+                .loads(loads, &mut fem)
+                .m1_segments()
+                .m2_segments()
+                .build()
+                .unwrap()
+                .into_arcx();
 
-    let state_space = {
-        /*
-                let mut dms = DiscreteModalSolver::<ExponentialMatrix>::from_fem(FEM::from_env()?)
-                    .sampling(sim_sampling_frequency as f64)
-                    .proportional_damping(2. / 100.)
-                    .ins::<CFD2021106F>()
-                    .ins::<OSSElDriveTorque>()
-                    .ins::<OSSAzDriveTorque>()
-                    .ins::<OSSRotDriveTorque>()
-                    .ins::<OSSHarpointDeltaF>()
-                    .ins::<M1ActuatorsSegment1>()
-                    .ins::<M1ActuatorsSegment2>()
-                    .ins::<M1ActuatorsSegment3>()
-                    .ins::<M1ActuatorsSegment4>()
-                    .ins::<M1ActuatorsSegment5>()
-                    .ins::<M1ActuatorsSegment6>()
-                    .ins::<M1ActuatorsSegment7>()
-                    .ins::<MCM2SmHexF>()
-                    .ins::<MCM2PZTF>()
-                    .outs::<OSSAzEncoderAngle>()
-                    .outs::<OSSElEncoderAngle>()
-                    .outs::<OSSRotEncoderAngle>()
-                    .outs::<OSSHardpointD>()
-                    .outs::<OSSM1Lcl>()
-                    .outs::<MCM2Lcl6D>()
-                    .outs_with::<M1Segment1AxialD>(fig_2_mode(1))
-                    .outs_with::<M1Segment2AxialD>(fig_2_mode(2))
-                    .outs_with::<M1Segment3AxialD>(fig_2_mode(3))
-                    .outs_with::<M1Segment4AxialD>(fig_2_mode(4))
-                    .outs_with::<M1Segment5AxialD>(fig_2_mode(5))
-                    .outs_with::<M1Segment6AxialD>(fig_2_mode(6))
-                    .outs_with::<M1Segment7AxialD>(fig_2_mode(7))
-                    .outs::<MCM2SmHexD>()
-                    .outs::<MCM2PZTD>();
-                let hsv = dms.hankel_singular_values()?;
-                serde_pickle::to_writer(
-                    &mut File::create("hankel_singular_values.pkl")?,
-                    &hsv,
-                    Default::default(),
-                )?;
-        */
-        DiscreteModalSolver::<ExponentialMatrix>::from_fem(fem)
-            .sampling(sim_sampling_frequency as f64)
-            .proportional_damping(2. / 100.)
-            //.truncate_hankel_singular_values(1e-4)
-            .max_eigen_frequency(75.)
-            .use_static_gain_compensation(n_io)
-            .ins::<CFD2021106F>()
-            .ins::<OSSElDriveTorque>()
-            .ins::<OSSAzDriveTorque>()
-            .ins::<OSSRotDriveTorque>()
-            .ins::<OSSHarpointDeltaF>()
-            .ins::<M1ActuatorsSegment1>()
-            .ins::<M1ActuatorsSegment2>()
-            .ins::<M1ActuatorsSegment3>()
-            .ins::<M1ActuatorsSegment4>()
-            .ins::<M1ActuatorsSegment5>()
-            .ins::<M1ActuatorsSegment6>()
-            .ins::<M1ActuatorsSegment7>()
-            .ins::<MCM2SmHexF>()
-            .ins::<MCM2PZTF>()
-            .outs::<OSSAzEncoderAngle>()
-            .outs::<OSSElEncoderAngle>()
-            .outs::<OSSRotEncoderAngle>()
-            .outs::<OSSHardpointD>()
-            .outs::<OSSM1Lcl>()
-            .outs::<MCM2Lcl6D>()
-            .outs_with::<M1Segment1AxialD>(fig_2_mode(1))
-            .outs_with::<M1Segment2AxialD>(fig_2_mode(2))
-            .outs_with::<M1Segment3AxialD>(fig_2_mode(3))
-            .outs_with::<M1Segment4AxialD>(fig_2_mode(4))
-            .outs_with::<M1Segment5AxialD>(fig_2_mode(5))
-            .outs_with::<M1Segment6AxialD>(fig_2_mode(6))
-            .outs_with::<M1Segment7AxialD>(fig_2_mode(7))
-            .outs::<MCM2SmHexD>()
-            .outs::<MCM2PZTD>()
-            .build()?
-    }
-    .into_arcx();
+        (cfd_loads, {
+            /*
+                    let mut dms = DiscreteModalSolver::<ExponentialMatrix>::from_fem(FEM::from_env()?)
+                        .sampling(sim_sampling_frequency as f64)
+                        .proportional_damping(2. / 100.)
+                        .ins::<CFD2021106F>()
+                        .ins::<OSSElDriveTorque>()
+                        .ins::<OSSAzDriveTorque>()
+                        .ins::<OSSRotDriveTorque>()
+                        .ins::<OSSHarpointDeltaF>()
+                        .ins::<M1ActuatorsSegment1>()
+                        .ins::<M1ActuatorsSegment2>()
+                        .ins::<M1ActuatorsSegment3>()
+                        .ins::<M1ActuatorsSegment4>()
+                        .ins::<M1ActuatorsSegment5>()
+                        .ins::<M1ActuatorsSegment6>()
+                        .ins::<M1ActuatorsSegment7>()
+                        .ins::<MCM2SmHexF>()
+                        .ins::<MCM2PZTF>()
+                        .outs::<OSSAzEncoderAngle>()
+                        .outs::<OSSElEncoderAngle>()
+                        .outs::<OSSRotEncoderAngle>()
+                        .outs::<OSSHardpointD>()
+                        .outs::<OSSM1Lcl>()
+                        .outs::<MCM2Lcl6D>()
+                        .outs_with::<M1Segment1AxialD>(fig_2_mode(1))
+                        .outs_with::<M1Segment2AxialD>(fig_2_mode(2))
+                        .outs_with::<M1Segment3AxialD>(fig_2_mode(3))
+                        .outs_with::<M1Segment4AxialD>(fig_2_mode(4))
+                        .outs_with::<M1Segment5AxialD>(fig_2_mode(5))
+                        .outs_with::<M1Segment6AxialD>(fig_2_mode(6))
+                        .outs_with::<M1Segment7AxialD>(fig_2_mode(7))
+                        .outs::<MCM2SmHexD>()
+                        .outs::<MCM2PZTD>();
+                    let hsv = dms.hankel_singular_values()?;
+                    serde_pickle::to_writer(
+                        &mut File::create("hankel_singular_values.pkl")?,
+                        &hsv,
+                        Default::default(),
+                    )?;
+            */
+            DiscreteModalSolver::<ExponentialMatrix>::from_fem(fem)
+                .sampling(sim_sampling_frequency as f64)
+                .proportional_damping(2. / 100.)
+                //.truncate_hankel_singular_values(1e-4)
+                .max_eigen_frequency(75.)
+                .use_static_gain_compensation(n_io)
+                .ins::<CFD2021106F>()
+                .ins::<OSSElDriveTorque>()
+                .ins::<OSSAzDriveTorque>()
+                .ins::<OSSRotDriveTorque>()
+                .ins::<OSSHarpointDeltaF>()
+                .ins::<M1ActuatorsSegment1>()
+                .ins::<M1ActuatorsSegment2>()
+                .ins::<M1ActuatorsSegment3>()
+                .ins::<M1ActuatorsSegment4>()
+                .ins::<M1ActuatorsSegment5>()
+                .ins::<M1ActuatorsSegment6>()
+                .ins::<M1ActuatorsSegment7>()
+                .ins::<MCM2SmHexF>()
+                .ins::<MCM2PZTF>()
+                .outs::<OSSAzEncoderAngle>()
+                .outs::<OSSElEncoderAngle>()
+                .outs::<OSSRotEncoderAngle>()
+                .outs::<OSSHardpointD>()
+                .outs::<OSSM1Lcl>()
+                .outs::<MCM2Lcl6D>()
+                .outs_with::<M1Segment1AxialD>(fig_2_mode(1))
+                .outs_with::<M1Segment2AxialD>(fig_2_mode(2))
+                .outs_with::<M1Segment3AxialD>(fig_2_mode(3))
+                .outs_with::<M1Segment4AxialD>(fig_2_mode(4))
+                .outs_with::<M1Segment5AxialD>(fig_2_mode(5))
+                .outs_with::<M1Segment6AxialD>(fig_2_mode(6))
+                .outs_with::<M1Segment7AxialD>(fig_2_mode(7))
+                .outs::<MCM2SmHexD>()
+                .outs::<MCM2PZTD>()
+                .build()?
+                .into_arcx()
+        })
+    };
     println!("{}", *state_space.lock().await);
     //println!("Y sizes: {:?}", state_space.y_sizes);
 
-    let cfd_case = cfd::CfdCase::<2021>::colloquial(30, 0, "os", 7)?;
-    println!("CFD CASE ({}Hz): {}", cfd_sampling_frequency, cfd_case);
-    let cfd_path = cfd::Baseline::<2021>::path().join(cfd_case.to_string());
-
-    let cfd_loads = windloads::CfdLoads::foh(cfd_path.to_str().unwrap(), sim_sampling_frequency)
-        .duration(sim_duration as f64)
-        //.time_range((200f64, 340f64))
-        .nodes(loads.iter().flat_map(|x| x.keys()).collect(), locations)
-        .m1_segments()
-        .m2_segments()
-        .build()
-        .unwrap()
-        .into_arcx();
     let n_step = (sim_duration * sim_sampling_frequency as f64) as usize;
     let logging = Arrow::builder(n_step)
-        .entry::<f64, OSSM1Lcl>(42)
-        .entry::<f64, MCM2Lcl6D>(42)
-        .entry::<f64, M1modes>(162 * 7)
         .filename("grim.parquet")
         .build()
         .into_arcx();
@@ -214,47 +184,48 @@ async fn main() -> anyhow::Result<()> {
         // MOUNT
         let mut mount: Actor<_> = Actor::new(mnt_ctrl.clone());
 
-        type D = Vec<f64>;
-
         source
             .add_output()
-            .build::<D, CFD2021106F>()
+            .build::<CFD2021106F>()
             .into_input(&mut fem);
         source
             .add_output()
-            .build::<D, OSSM1Lcl6F>()
+            .build::<OSSM1Lcl6F>()
             .into_input(&mut fem);
         source
             .add_output()
-            .build::<D, MCM2LclForce6F>()
+            .build::<MCM2LclForce6F>()
             .into_input(&mut fem);
 
         let mut mount_set_point: Initiator<_> = Signals::new(3, n_step).into();
         mount_set_point
             .add_output()
-            .build::<D, MountSetPoint>()
+            .build::<MountSetPoint>()
             .into_input(&mut mount);
         mount
             .add_output()
-            .build::<D, MountTorques>()
+            .build::<MountTorques>()
             .into_input(&mut fem);
 
         fem.add_output()
             .bootstrap()
-            .build::<D, MountEncoders>()
+            .build::<MountEncoders>()
             .into_input(&mut mount);
         fem.add_output()
             .bootstrap()
-            .build::<D, OSSM1Lcl>()
-            .into_input(&mut sink);
+            .build::<OSSM1Lcl>()
+            .logn(&mut sink, 42)
+            .await;
         fem.add_output()
             .bootstrap()
-            .build::<D, MCM2Lcl6D>()
-            .into_input(&mut sink);
+            .build::<MCM2Lcl6D>()
+            .logn(&mut sink, 42)
+            .await;
         fem.add_output()
             .bootstrap()
-            .build::<D, M1modes>()
-            .into_input(&mut sink);
+            .build::<M1modes>()
+            .logn(&mut sink, 162 * 7)
+            .await;
 
         Model::new(vec![
             Box::new(source),
@@ -268,7 +239,38 @@ async fn main() -> anyhow::Result<()> {
         .run()
     };
 
+    #[cfg(not(feature = "full"))]
+    model_1.wait().await?;
+
+    #[cfg(feature = "full")]
     {
+        use crseo::{
+            calibrations, Atmosphere, Builder, Calibration, FromBuilder, Gmt, Source, SH24 as TT7,
+            SH48,
+        };
+        use dos_actors::{
+            clients::{
+                arrow_client::Arrow,
+                ceo,
+                ceo::M1modes,
+                fsm::*,
+                m1::*,
+                mount::{MountEncoders, MountSetPoint, MountTorques},
+                Integrator,
+            },
+            prelude::*,
+        };
+        use linya::{Bar, Progress};
+        use lom::{Loader, LoaderTrait, OpticalSensitivities, OpticalSensitivity};
+        use skyangle::Conversion;
+        use std::{
+            fs::File,
+            path::Path,
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+        use tokio::sync::Mutex;
+
         let mut source: Initiator<_> = Actor::new(cfd_loads.clone()).name("CFD Loads");
         let mut sink = Terminator::<_>::new(logging.clone()).name("GMT State");
         // FEM
@@ -278,15 +280,15 @@ async fn main() -> anyhow::Result<()> {
 
         source
             .add_output()
-            .build::<D, CFD2021106F>()
+            .build::<CFD2021106F>()
             .into_input(&mut fem);
         source
             .add_output()
-            .build::<D, OSSM1Lcl6F>()
+            .build::<OSSM1Lcl6F>()
             .into_input(&mut fem);
         source
             .add_output()
-            .build::<D, MCM2LclForce6F>()
+            .build::<MCM2LclForce6F>()
             .into_input(&mut fem);
 
         // HARDPOINTS
@@ -317,11 +319,11 @@ async fn main() -> anyhow::Result<()> {
         let mut mount_set_point: Initiator<_> = (Signals::new(3, n_step), "Mount 0pt").into();
         mount_set_point
             .add_output()
-            .build::<D, MountSetPoint>()
+            .build::<MountSetPoint>()
             .into_input(&mut mount);
         mount
             .add_output()
-            .build::<D, MountTorques>()
+            .build::<MountTorques>()
             .into_input(&mut fem);
 
         /*let m1s1f_set_point: Initiator<_, M1_RATE> = Signals::new(335, n_step)
@@ -344,7 +346,7 @@ async fn main() -> anyhow::Result<()> {
             .into();
         m1s1f
             .add_output()
-            .build::<D, S1SAoffsetFcmd>()
+            .build::<S1SAoffsetFcmd>()
             .into_input(&mut m1_segment1);
         // M1S2 -------------------------------------------------------------------------------
         let mut m1s2f: Actor<_, SH48_RATE, M1_RATE> = (
@@ -354,7 +356,7 @@ async fn main() -> anyhow::Result<()> {
             .into();
         m1s2f
             .add_output()
-            .build::<D, S2SAoffsetFcmd>()
+            .build::<S2SAoffsetFcmd>()
             .into_input(&mut m1_segment2);
         // M1S3 -------------------------------------------------------------------------------
         let mut m1s3f: Actor<_, SH48_RATE, M1_RATE> = (
@@ -364,7 +366,7 @@ async fn main() -> anyhow::Result<()> {
             .into();
         m1s3f
             .add_output()
-            .build::<D, S3SAoffsetFcmd>()
+            .build::<S3SAoffsetFcmd>()
             .into_input(&mut m1_segment3);
         // M1S4 -------------------------------------------------------------------------------
         let mut m1s4f: Actor<_, SH48_RATE, M1_RATE> = (
@@ -374,7 +376,7 @@ async fn main() -> anyhow::Result<()> {
             .into();
         m1s4f
             .add_output()
-            .build::<D, S4SAoffsetFcmd>()
+            .build::<S4SAoffsetFcmd>()
             .into_input(&mut m1_segment4);
         // M1S5 -------------------------------------------------------------------------------
         let mut m1s5f: Actor<_, SH48_RATE, M1_RATE> = (
@@ -384,7 +386,7 @@ async fn main() -> anyhow::Result<()> {
             .into();
         m1s5f
             .add_output()
-            .build::<D, S5SAoffsetFcmd>()
+            .build::<S5SAoffsetFcmd>()
             .into_input(&mut m1_segment5);
         // M1S6 -------------------------------------------------------------------------------
         let mut m1s6f: Actor<_, SH48_RATE, M1_RATE> = (
@@ -394,7 +396,7 @@ async fn main() -> anyhow::Result<()> {
             .into();
         m1s6f
             .add_output()
-            .build::<D, S6SAoffsetFcmd>()
+            .build::<S6SAoffsetFcmd>()
             .into_input(&mut m1_segment6);
         // M1S7 -------------------------------------------------------------------------------
         let mut m1s7f: Actor<_, SH48_RATE, M1_RATE> = (
@@ -404,93 +406,93 @@ async fn main() -> anyhow::Result<()> {
             .into();
         m1s7f
             .add_output()
-            .build::<D, S7SAoffsetFcmd>()
+            .build::<S7SAoffsetFcmd>()
             .into_input(&mut m1_segment7);
 
         let mut m1rbm_set_point: Initiator<_> = (Signals::new(42, n_step), "M1 RBM 0pt").into();
         m1rbm_set_point
             .add_output()
-            .build::<D, M1RBMcmd>()
+            .build::<M1RBMcmd>()
             .into_input(&mut m1_hardpoints);
         m1_hardpoints
             .add_output()
             .multiplex(2)
-            .build::<D, OSSHarpointDeltaF>()
+            .build::<OSSHarpointDeltaF>()
             .into_input(&mut fem)
             .into_input(&mut m1_hp_loadcells);
 
         m1_hp_loadcells
             .add_output()
             .bootstrap()
-            .build::<D, S1HPLC>()
+            .build::<S1HPLC>()
             .into_input(&mut m1_segment1);
         m1_hp_loadcells
             .add_output()
             .bootstrap()
-            .build::<D, S2HPLC>()
+            .build::<S2HPLC>()
             .into_input(&mut m1_segment2);
         m1_hp_loadcells
             .add_output()
             .bootstrap()
-            .build::<D, S3HPLC>()
+            .build::<S3HPLC>()
             .into_input(&mut m1_segment3);
         m1_hp_loadcells
             .add_output()
             .bootstrap()
-            .build::<D, S4HPLC>()
+            .build::<S4HPLC>()
             .into_input(&mut m1_segment4);
         m1_hp_loadcells
             .add_output()
             .bootstrap()
-            .build::<D, S5HPLC>()
+            .build::<S5HPLC>()
             .into_input(&mut m1_segment5);
         m1_hp_loadcells
             .add_output()
             .bootstrap()
-            .build::<D, S6HPLC>()
+            .build::<S6HPLC>()
             .into_input(&mut m1_segment6);
         m1_hp_loadcells
             .add_output()
             .bootstrap()
-            .build::<D, S7HPLC>()
+            .build::<S7HPLC>()
             .into_input(&mut m1_segment7);
 
         m1_segment1
             .add_output()
-            .build::<D, M1ActuatorsSegment1>()
+            .build::<M1ActuatorsSegment1>()
             .into_input(&mut fem);
         m1_segment2
             .add_output()
-            .build::<D, M1ActuatorsSegment2>()
+            .build::<M1ActuatorsSegment2>()
             .into_input(&mut fem);
         m1_segment3
             .add_output()
-            .build::<D, M1ActuatorsSegment3>()
+            .build::<M1ActuatorsSegment3>()
             .into_input(&mut fem);
         m1_segment4
             .add_output()
-            .build::<D, M1ActuatorsSegment4>()
+            .build::<M1ActuatorsSegment4>()
             .into_input(&mut fem);
         m1_segment5
             .add_output()
-            .build::<D, M1ActuatorsSegment5>()
+            .build::<M1ActuatorsSegment5>()
             .into_input(&mut fem);
         m1_segment6
             .add_output()
-            .build::<D, M1ActuatorsSegment6>()
+            .build::<M1ActuatorsSegment6>()
             .into_input(&mut fem);
         m1_segment7
             .add_output()
-            .build::<D, M1ActuatorsSegment7>()
+            .build::<M1ActuatorsSegment7>()
             .into_input(&mut fem);
 
         fem.add_output()
             .bootstrap()
-            .build::<D, MountEncoders>()
+            .build::<MountEncoders>()
             .into_input(&mut mount);
         fem.add_output()
             .bootstrap()
-            .build::<D, OSSHardpointD>()
+            .build::<OSSHardpointD>()
             .into_input(&mut m1_hp_loadcells);
 
         // M2 POSITIONER COMMAND
@@ -500,11 +502,11 @@ async fn main() -> anyhow::Result<()> {
             (fsm::positionner::Controller::new(), "M2 Positionners").into();
         m2_pos_cmd
             .add_output()
-            .build::<D, M2poscmd>()
+            .build::<M2poscmd>()
             .into_input(&mut m2_positionner);
         m2_positionner
             .add_output()
-            .build::<D, MCM2SmHexF>()
+            .build::<MCM2SmHexF>()
             .into_input(&mut fem);
         // FSM PIEZOSTACK COMMAND
         //let mut m2_pzt_cmd: Initiator<_> = (Signals::new(21, n_step), "M2_PZT_setpoint").into();
@@ -513,20 +515,20 @@ async fn main() -> anyhow::Result<()> {
             (fsm::piezostack::Controller::new(), "M2 PZT Actuators").into();
         /*m2_pzt_cmd
         .add_output()
-        .build::<D, PZTcmd>()
+        .build::< PZTcmd>()
         .into_input(&mut m2_piezostack);*/
         m2_piezostack
             .add_output()
-            .build::<D, MCM2PZTF>()
+            .build::<MCM2PZTF>()
             .into_input(&mut fem);
 
         fem.add_output()
             .bootstrap()
-            .build::<D, MCM2SmHexD>()
+            .build::<MCM2SmHexD>()
             .into_input(&mut m2_positionner);
         fem.add_output()
             .bootstrap()
-            .build::<D, MCM2PZTD>()
+            .build::<MCM2PZTD>()
             .into_input(&mut m2_piezostack);
         // FSM TIP-TILT CONTROL
         let mut tiptilt_set_point: Initiator<_, FSM_RATE> = (
@@ -538,18 +540,19 @@ async fn main() -> anyhow::Result<()> {
             (fsm::tiptilt::Controller::new(), "M2 TipTilt Control").into();
         tiptilt_set_point
             .add_output()
-            .build::<D, TTSP>()
+            .build::<TTSP>()
             .into_input(&mut m2_tiptilt);
         m2_tiptilt
             .add_output()
             .bootstrap()
-            .build::<D, PZTcmd>()
+            .build::<PZTcmd>()
             .into_input(&mut m2_piezostack);
         // OPTICAL MODEL (SH24)
+        println!("SH24");
         let atm_duration = 20f32;
         let atm_n_duration = Some((sim_duration / atm_duration as f64).ceil() as i32);
         let atm_sampling = 48 * 16 + 1;
-        let atm = ATMOSPHERE::new().ray_tracing(
+        let atm = Atmosphere::builder().ray_tracing(
             25.5,
             atm_sampling,
             20f32.from_arcmin(),
@@ -557,12 +560,12 @@ async fn main() -> anyhow::Result<()> {
             Some("/fsx/atmosphere/atm_15mn.bin".to_owned()),
             atm_n_duration,
         );
-        let gmt_builder = GMT::new().m1_n_mode(162);
+        let gmt_builder = Gmt::builder().m1_n_mode(162);
         let tau = (sim_sampling_frequency as f64).recip();
         let mut agws_tt7: Actor<_, 1, FSM_RATE> = {
             let mut agws_sh24 = ceo::OpticalModel::builder()
                 .gmt(gmt_builder.clone())
-                .source(SOURCE::new())
+                .source(Source::builder())
                 .options(vec![
                     ceo::OpticalModelOptions::ShackHartmann {
                         options: ceo::ShackHartmannOptions::Diffractive(
@@ -579,6 +582,7 @@ async fn main() -> anyhow::Result<()> {
             use calibrations::Mirror;
             use calibrations::Segment::*;
             // GMT 2 WFS
+            println!(" - calibration ...");
             let mut gmt2wfs = Calibration::new(
                 &agws_sh24.gmt,
                 &agws_sh24.src,
@@ -612,15 +616,16 @@ async fn main() -> anyhow::Result<()> {
         };
         agws_tt7
             .add_output()
-            .build::<D, TTFB>()
+            .build::<TTFB>()
             .into_input(&mut m2_tiptilt);
 
         // OPTICAL MODEL (SH48)
+        println!("SH48");
         let n_sh48 = 1;
         let gmt_agws_sh48 = {
             let mut agws_sh48 = ceo::OpticalModel::builder()
                 .gmt(gmt_builder)
-                .source(SOURCE::new().on_ring(6f32.from_arcmin()))
+                .source(Source::builder().on_ring(6f32.from_arcmin()))
                 .options(vec![
                     ceo::OpticalModelOptions::ShackHartmann {
                         options: ceo::ShackHartmannOptions::Diffractive(
@@ -641,6 +646,7 @@ async fn main() -> anyhow::Result<()> {
                 let file = File::open(poke_mat_file)?;
                 bincode::deserialize_from(file)?
             } else {
+                println!(" - calibration ...");
                 use calibrations::Mirror;
                 use calibrations::Segment::*;
                 // GMT 2 WFS
@@ -690,7 +696,7 @@ async fn main() -> anyhow::Result<()> {
             .bootstrap()
             .multiplex(3)
             .unbounded()
-            .build::<D, OSSM1Lcl>()
+            .build::<OSSM1Lcl>()
             .into_input(&mut agws_tt7)
             .into_input(&mut agws_sh48)
             .into_input(&mut sink);
@@ -698,7 +704,7 @@ async fn main() -> anyhow::Result<()> {
             .bootstrap()
             .multiplex(3)
             .unbounded()
-            .build::<D, MCM2Lcl6D>()
+            .build::<MCM2Lcl6D>()
             .into_input(&mut agws_tt7)
             .into_input(&mut agws_sh48)
             .into_input(&mut sink);
@@ -706,7 +712,7 @@ async fn main() -> anyhow::Result<()> {
             .bootstrap()
             .multiplex(3)
             .unbounded()
-            .build::<D, M1modes>()
+            .build::<M1modes>()
             .into_input(&mut agws_tt7)
             .into_input(&mut agws_sh48)
             .into_input(&mut sink);
@@ -751,36 +757,28 @@ async fn main() -> anyhow::Result<()> {
                 .gain(0.5)
                 .zero(zero_point)
                 .into();
-        let sh48_arrow = Arrow::builder(n_step)
-            .entry::<f64, ceo::SensorData>(27 * 7)
-            .entry::<f64, ceo::WfeRms>(1)
-            .entry::<f32, ceo::DetectorFrame>(48 * 48 * 8 * 8 * n_sh48)
-            .filename("sh48.parquet")
-            .build();
+        let sh48_arrow = Arrow::builder(n_step).filename("sh48.parquet").build();
         let mut sh48_log: Terminator<_, SH48_RATE> = (sh48_arrow, "SH48_Log").into();
 
         agws_sh48
             .add_output()
             .multiplex(2)
-            .build::<D, ceo::SensorData>()
+            .build::<ceo::SensorData>()
             .into_input(&mut integrator)
-            .into_input(&mut sh48_log);
+            .logn(&mut sh48_log, 27 * 7)
+            .await;
         agws_sh48
             .add_output()
-            .build::<D, ceo::WfeRms>()
-            .into_input(&mut sh48_log);
+            .build::<ceo::WfeRms>()
+            .log(&mut sh48_log)
+            .await;
         agws_sh48
             .add_output()
-            .build::<Vec<f32>, ceo::DetectorFrame>()
-            .into_input(&mut sh48_log);
+            .build::<ceo::DetectorFrame>()
+            .logn(&mut sh48_log, 48 * 48 * 8 * 8 * n_sh48)
+            .await;
 
         let sh24_arrow = Arrow::builder(n_step)
-            .entry::<f64, ceo::WfeRms>(1)
-            .entry::<f64, ceo::TipTilt>(2)
-            .entry::<f64, ceo::SegmentWfeRms>(7)
-            .entry::<f64, ceo::SegmentPiston>(7)
-            .entry::<f64, ceo::SegmentTipTilt>(14)
-            //.entry::<f32, ceo::DetectorFrame>(24 * 24 * 12 * 12)
             .filename("sh24.parquet")
             //.decimation(10)
             .build();
@@ -788,25 +786,32 @@ async fn main() -> anyhow::Result<()> {
 
         agws_tt7
             .add_output()
-            .build::<D, ceo::WfeRms>()
-            .into_input(&mut sh24_log);
+            .build::<ceo::WfeRms>()
+            .log(&mut sh24_log)
+            .await;
         agws_tt7
             .add_output()
-            .build::<D, ceo::TipTilt>()
-            .into_input(&mut sh24_log);
+            .build::<ceo::TipTilt>()
+            .log(&mut sh24_log)
+            .await;
         agws_tt7
             .add_output()
-            .build::<D, ceo::SegmentWfeRms>()
-            .into_input(&mut sh24_log);
+            .build::<ceo::SegmentWfeRms>()
+            .log(&mut sh24_log)
+            .await;
         agws_tt7
             .add_output()
-            .build::<D, ceo::SegmentPiston>()
-            .into_input(&mut sh24_log);
+            .build::<ceo::SegmentPiston>()
+            .log(&mut sh24_log)
+            .await;
         agws_tt7
             .add_output()
-            .build::<D, ceo::SegmentTipTilt>()
-            .into_input(&mut sh24_log);
+            .build::<ceo::SegmentTipTilt>()
+            .log(&mut sh24_log)
+            .await;
 
+        #[derive(UID)]
+        #[uid(data = "Vec<f32>")]
         enum SH24Frame {}
         let mut sh24_frame_sampler: Actor<_, FSM_RATE, { FSM_RATE * 200 }> = (
             Sampler::<Vec<f32>, ceo::DetectorFrame, SH24Frame>::default(),
@@ -815,11 +820,10 @@ async fn main() -> anyhow::Result<()> {
             .into();
         agws_tt7
             .add_output()
-            .build::<Vec<f32>, ceo::DetectorFrame>()
+            .build::<ceo::DetectorFrame>()
             .into_input(&mut &mut sh24_frame_sampler);
         let mut sh24_frame_logger: Terminator<_, { FSM_RATE * 200 }> = (
             Arrow::builder(n_step)
-                .entry::<f32, SH24Frame>(24 * 24 * 12 * 12)
                 .filename("sh24-frame.parquet")
                 .build(),
             "SH24 Frame Logs",
@@ -827,14 +831,15 @@ async fn main() -> anyhow::Result<()> {
             .into();
         sh24_frame_sampler
             .add_output()
-            .build::<Vec<f32>, SH24Frame>()
-            .into_input(&mut sh24_frame_logger);
+            .build::<SH24Frame>()
+            .logn(&mut sh24_frame_logger, 24 * 24 * 12 * 12)
+            .await;
 
         integrator
             .add_output()
             .bootstrap()
             .multiplex(7)
-            .build::<D, M1ModalCmd>()
+            .build::<M1ModalCmd>()
             .into_input(&mut m1s1f)
             .into_input(&mut m1s2f)
             .into_input(&mut m1s3f)
