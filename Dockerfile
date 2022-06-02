@@ -1,35 +1,25 @@
-FROM nvidia/cuda:10.1-devel as build
+FROM nvidia/cuda:10.1-devel-ubuntu18.04 as build
 
-# Update default packages
-RUN apt-get update  
+RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys A4B469963BF863CC
+RUN apt-get update && apt-get install -y git curl libcurl4-openssl-dev\
+    build-essential llvm-dev libclang-dev clang noweb
 
-# Get Ubuntu packages
-RUN apt-get install -y \
-    build-essential \
-    curl cmake libfreetype6 libfreetype6-dev \
-    libclang-dev libcurl4-openssl-dev
-
-# Update new packages
-RUN apt-get update
-
-# Get Rust
 RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
-
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-ADD crseo.tgz .
-ADD dos-actors.tgz dos-actors
+ADD Cargo.toml /test/
+ADD src/main.rs /test/src/
+WORKDIR /test 
 
-RUN USER=root cargo new --bin grim
-WORKDIR /grim
+RUN git clone -b rust https://github.com/rconan/ceo.git
+RUN cd ceo && make all install
+RUN cargo build --release --bin main
 
-RUN ls ../crseo/CEO/lib/
+FROM nvidia/cuda:10.1-runtime-ubuntu18.04
 
-COPY ./Cargo.toml ./Cargo.toml
-COPY modal_state_space_model_2ndOrder.zip /grim/
-ENV FEM_REPO=/grim
-COPY ./src ./src
-RUN touch /crseo/build.rs
-RUN cargo build --release --verbose
+ADD ceo-modes.tar .
+ENV GMT_MODES_PATH="/"
 
-RUN ls target/release/
+COPY --from=build /test/target/release/main grim
+
+CMD ["./grim"]

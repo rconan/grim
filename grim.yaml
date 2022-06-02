@@ -1,0 +1,74 @@
+Resources:
+  GRIMLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties: 
+      LaunchTemplateData: 
+        EbsOptimized: false
+        KeyName: awsoregon
+        UserData:
+          Fn::Base64:
+            !Sub
+            - |
+                MIME-Version: 1.0
+                Content-Type: multipart/mixed; boundary="==MYBOUNDARY=="
+
+                --==MYBOUNDARY==
+                Content-Type: text/cloud-config; charset="us-ascii"
+                
+                runcmd:
+                  - amazon-linux-extras install -y lustre2.10
+                  - mkdir -p /fsx
+                  - mount -t lustre -o defaults,_netdev,flock,user_xattr,noatime ${fsx_id}.fsx.us-west-2.amazonaws.com@tcp:/${mount_name} /fsx 
+                  
+                --==MYBOUNDARY==--
+            - fsx_id: "fs-0e6759f50ff7a310c"
+              mount_name: "x346hbmv"
+      LaunchTemplateName: GRIMTemplate  
+  GRIMCompute:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties: 
+      ComputeEnvironmentName: CFDCompute
+      ComputeResources: 
+        AllocationStrategy: BEST_FIT
+        DesiredvCpus: 8
+        Ec2KeyPair: awsoregon
+        InstanceRole: arn:aws:iam::378722409401:instance-profile/ecsInstanceRole
+        InstanceTypes:
+          - p3
+        MaxvCpus: 256
+        MinvCpus: 0
+        SecurityGroupIds:
+          - sg-b3f854c8
+        Subnets:
+          - subnet-7979c31c
+        Type: EC2
+      ServiceRole: arn:aws:iam::378722409401:role/service-role/AWSBatchServiceRole
+      State: ENABLED
+      Type: MANAGED
+  GRIMJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties: 
+      ComputeEnvironmentOrder: 
+        - ComputeEnvironment: !Ref GRIMCompute
+          Order: 1
+      Priority: 1
+      JobQueueName: GRIMJobQueue
+      State: ENABLED
+  GRIMJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties: 
+      ContainerProperties: 
+        Command:
+          - ./grim
+        Image: 378722409401.dkr.ecr.us-west-2.amazonaws.com/gmto.im/grim:latest
+        ResourceRequirements:
+          - Type: VCPU
+            Value: '8'
+          - Type: MEMORY
+            Value: '10240'
+          - Type: GPU
+            Value: '1'
+      JobDefinitionName: GRIMJob
+      PlatformCapabilities: 
+        - EC2
+      Type: container
