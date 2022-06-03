@@ -27,7 +27,7 @@ Resources:
   GRIMCompute:
     Type: AWS::Batch::ComputeEnvironment
     Properties: 
-      ComputeEnvironmentName: CFDCompute
+      ComputeEnvironmentName: GRIMCompute
       ComputeResources: 
         AllocationStrategy: BEST_FIT
         DesiredvCpus: 8
@@ -35,6 +35,9 @@ Resources:
         InstanceRole: arn:aws:iam::378722409401:instance-profile/ecsInstanceRole
         InstanceTypes:
           - p3
+        LaunchTemplate:
+          LaunchTemplateId: !Ref GRIMLaunchTemplate
+          Version: $Default
         MaxvCpus: 256
         MinvCpus: 0
         SecurityGroupIds:
@@ -60,6 +63,19 @@ Resources:
       ContainerProperties: 
         Command:
           - ./grim
+        Environment:
+          - Name: FEM_REPO
+            Value: /fsx/20220308_1335_MT_mount_zen_30_m1HFN_FSM/
+          - Name: CFD_REPO
+            Value: /fsx/CASES
+          - Name: M1CALIBRATION
+            Value: /fsx/m1calibration/
+          - Name: GMT_MODES_PATH
+            Value: /fsx/ceo/
+          - Name: SH48_N_STEP
+            Value: 5
+          - Name: LOM
+            Value: /fsx
         Image: 378722409401.dkr.ecr.us-west-2.amazonaws.com/gmto.im/grim:latest
         ResourceRequirements:
           - Type: VCPU
@@ -68,6 +84,13 @@ Resources:
             Value: '10240'
           - Type: GPU
             Value: '1'
+        MountPoints:
+          - ContainerPath: /fsx
+            SourceVolume: fsx
+        Volumes:
+          - Host:
+              SourcePath: /fsx
+            Name: fsx        
       JobDefinitionName: GRIMJob
       PlatformCapabilities: 
         - EC2

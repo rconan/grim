@@ -1,3 +1,4 @@
+use chrono::prelude::*;
 use dos_actors::{
     clients::{
         arrow_client::Arrow,
@@ -14,7 +15,11 @@ use fem::{
 };
 use nalgebra as na;
 use parse_monitors::cfd;
-use std::{env, fs::File, path::Path};
+use std::{
+    env,
+    fs::{create_dir, File},
+    path::Path,
+};
 
 fn fig_2_mode(sid: u32) -> na::DMatrix<f64> {
     let root_env = env::var("M1CALIBRATION").unwrap_or_else(|_| ".".to_string());
@@ -32,6 +37,12 @@ fn fig_2_mode(sid: u32) -> na::DMatrix<f64> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
+
+    let local: DateTime<Local> = Local::now();
+    let data_path = Path::new("/fsx").join("grim").join(local.to_rfc3339());
+    create_dir(&data_path)?;
+    env::set_var("DATA_REPO", data_path);
+
     let sim_sampling_frequency = 1000_usize;
 
     const CFD_RATE: usize = 1;
@@ -77,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
                 .duration(sim_duration as f64)
                 //.time_range((200f64, 340f64))
                 //.nodes(loads.iter().flat_map(|x| x.keys()).collect(), locations)
-                .loads(loads, &mut fem)
+                .loads(loads, &mut fem, 0)
                 .m1_segments()
                 .m2_segments()
                 .build()
@@ -639,8 +650,9 @@ async fn main() -> anyhow::Result<()> {
                     },
                 ])
                 .build()?;
+            let data_repo = env::var("DATA_REPO").unwrap_or_else(|_| ".".to_string());
             let filename = format!("sh48x{}-diff_2_m1-modes.bin", n_sh48);
-            let poke_mat_file = Path::new(&filename);
+            let poke_mat_file = Path::new(&data_repo).join(&filename);
             let wfs_2_dof: na::DMatrix<f64> = if poke_mat_file.is_file() {
                 println!(" . Poke matrix loaded from {poke_mat_file:?}");
                 let file = File::open(poke_mat_file)?;
@@ -681,7 +693,7 @@ async fn main() -> anyhow::Result<()> {
                 let condition_number = max_sv / min_sv;
                 println!("SH48 poke matrix condition number: {condition_number:e}");
                 let wfs_2_dof = dof_2_wfs.clone().pseudo_inverse(1e-12).unwrap();
-                let mut file = File::create(poke_mat_file)?;
+                let mut file = File::create(&poke_mat_file)?;
                 bincode::serialize_into(&mut file, &wfs_2_dof)?;
                 println!(" . Poke matrix saved to {poke_mat_file:?}");
                 wfs_2_dof
