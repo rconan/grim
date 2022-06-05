@@ -10,3 +10,6 @@ Cargo.lock
 *.zip
 *.bin
 .vscode/
+*-workspace
+*.ipynb
+*.tar
