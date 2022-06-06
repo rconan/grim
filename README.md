@@ -43,6 +43,11 @@ The environment variables are:
  - DATA_REPO [/fsx/grim]: the path where the directory with the simulation results will be saved
   - SH48_N_STEP [5]: the number of 30s integration of the SH48 WFSs, the total simulated duration is: (10 + 30*SH48_N_STEP) seconds
 
+An environment variable is set with
+```
+export <VAR_NAME>=<VAR_VALUE>
+```
+
 ## Running the model
 
 ```
