@@ -41,9 +41,8 @@ async fn main() -> anyhow::Result<()> {
     let local: DateTime<Local> = Local::now();
     let data_path = Path::new("/fsx").join("grim").join(local.to_rfc3339());
     create_dir(&data_path)?;
-     println!("Data repository: {:?}",&data_path);
-   env::set_var("DATA_REPO", data_path);
-
+    println!("Data repository: {:?}", &data_path);
+    env::set_var("DATA_REPO", data_path);
 
     let sim_sampling_frequency = 1000_usize;
 

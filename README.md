@@ -53,3 +53,36 @@ export <VAR_NAME>=<VAR_VALUE>
 ```
 sudo -E LD_LIBRARY_PATH=/usr/local/cuda/lib64 ./target/release/main
 ```
+
+## Model description
+
+The model is sampled a 1kHz.
+
+### FEM
+
+The continuous FEM state space model is loaded from the data in the `$FEM_REPO` directory. The model is discretized for a sampling rate of 1kHz using the [matrix exponential](https://en.wikipedia.org/wiki/Discretization) method.
+
+### Wind loads
+
+The model applies CFD wind loads onto the FEM from the `zen30az000_OS7` CFD case.
+
+### Mount control
+
+The continuous control system of the mount drives has been discretized to match the simulation sampling rate of 1kHz.
+
+### M1 hardpoints and actuators
+
+The M1 force loop between M1 segment hardpoints and actuators is sampled at 100Hz.
+
+### M2 positionners and piezo-stack actuators
+
+Both control systems of M2 positionners and piezo-stack actuators are sampled at 1KHz.
+
+### Tip-tilt loop
+
+A feedback loop control system, sampled a 200Hz, between a 24x24 Shack-Hartmann WFS and the FSM tilt and tilt model is implemented. 
+
+### Active Optics loop
+
+A feedback loop control system, with a sampling rate of 30s, between a 48x48 Shack-Hartmann WFS and M1 and M2 rigid  body motions and M1 bending modes is implemented. 
+
