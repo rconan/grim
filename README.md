@@ -41,11 +41,11 @@ export <VAR_NAME>=<VAR_VALUE>
 
 The complete model is build with
 ```
-cargo build --release --features full
+cargo build --release --features full --bin main
 ```
 A simplified version with only the CFD wind loads (the first 10s) and the mount control system is build with
 ```
-cargo build --release
+cargo build --release --bin main
 ```
 
 ## Running the model
