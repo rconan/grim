@@ -2,17 +2,6 @@
 
 The GRIM crate allows to run the GMT integrated model based on the [dos-actors](https://github.com/rconan/dos-actors) crate.
 
-## Building the model
-
-The complete model is build with
-```
-cargo build --release --features full
-```
-A simplified version with only the CFD wind loads (the first 10s) and the mount control system is build with
-```
-cargo build --release
-```
-
 ## CFD remote drive install
 
 To access the CFD wind loads remote drive, install the client for the Lustre FsX file system:
@@ -46,6 +35,17 @@ The environment variables are:
 An environment variable is set with
 ```
 export <VAR_NAME>=<VAR_VALUE>
+```
+
+## Building the model
+
+The complete model is build with
+```
+cargo build --release --features full --bin main
+```
+A simplified version with only the CFD wind loads (the first 10s) and the mount control system is build with
+```
+cargo build --release --bin main
 ```
 
 ## Running the model
