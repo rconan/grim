@@ -1,6 +1,11 @@
-use crseo::{pssn, Builder, ShackHartmannBuilder, ATMOSPHERE, GMT, PSSN, SOURCE};
+use crseo::pssn::TelescopeError;
+use crseo::{Diffractive, FromBuilder, Gmt, PSSn, ShackHartmann, Source};
 use dos_actors::{
-    clients::{arrow_client::Arrow, ceo, gmt_state::GmtState},
+    clients::{
+        arrow_client::{Arrow, Get},
+        ceo,
+        gmt_state::GmtState,
+    },
     prelude::*,
     Update,
 };
@@ -18,15 +23,15 @@ async fn main() -> anyhow::Result<()> {
     let sim_duration = (EXPOSURE_RATE / sim_sampling_frequency) as f64;
     log::info!("Simulation duration: {:6.3}s", sim_duration);
 
-    let gmt_builder = GMT::new().m1_n_mode(162);
+    let gmt_builder = Gmt::builder().m1_n_mode(162);
     let bench = ceo::OpticalModel::builder()
         .gmt(gmt_builder)
-        .source(SOURCE::new().zenith_azimuth(vec![6f32.from_arcmin()], vec![0f32]))
+        .source(Source::builder().zenith_azimuth(vec![6f32.from_arcmin()], vec![0f32]))
         .options(vec![
             ceo::OpticalModelOptions::ShackHartmann {
-                options: ceo::ShackHartmannOptions::Diffractive(ShackHartmannBuilder::<
-                    crseo::Diffractive,
-                >::new()),
+                options: ceo::ShackHartmannOptions::Diffractive(
+                    ShackHartmann::<Diffractive>::builder(),
+                ),
                 flux_threshold: 0.,
             },
             /*ceo::OpticalModelOptions::Atmosphere {
@@ -45,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
                                     time_step: (sim_sampling_frequency as f64).recip(),
                                 },*/
             ceo::OpticalModelOptions::PSSn(ceo::PSSnOptions::Telescope(
-                PSSN::<pssn::TelescopeError>::new(),
+                PSSn::<TelescopeError>::builder(),
             )),
         ])
         .build()?
@@ -61,32 +66,24 @@ async fn main() -> anyhow::Result<()> {
     let mut gmt_state: Initiator<_> = Into::<GmtState>::into((
         Arrow::from_parquet("grim.parquet")?,
         CFD_DELAY * sim_sampling_frequency,
-        n_step,
+        Some(n_step),
     ))
     .into();
 
-    type D = Vec<f64>;
     gmt_state
         .add_output()
-        .build::<D, ceo::M1rbm>()
+        .build::<ceo::M1rbm>()
         .into_input(&mut on_axis);
     gmt_state
         .add_output()
-        .build::<D, ceo::M2rbm>()
+        .build::<ceo::M2rbm>()
         .into_input(&mut on_axis);
     gmt_state
         .add_output()
-        .build::<D, ceo::M1modes>()
+        .build::<ceo::M1modes>()
         .into_input(&mut on_axis);
 
     let logs = Arrow::builder(1)
-        .entry::<f64, ceo::WfeRms>(1)
-        .entry::<f64, ceo::TipTilt>(2)
-        .entry::<f64, ceo::SegmentWfeRms>(7)
-        .entry::<f64, ceo::SegmentPiston>(7)
-        .entry::<f64, ceo::SegmentTipTilt>(14)
-        .entry::<f64, ceo::PSSn>(1)
-        .entry::<f32, ceo::DetectorFrame>(512 * 512)
         .filename("bench.parquet")
         .build()
         .into_arcx();
@@ -94,32 +91,39 @@ async fn main() -> anyhow::Result<()> {
     let mut logger = Terminator::<_, EXPOSURE_RATE>::new(logs.clone()).name("Logs");
     on_axis
         .add_output()
-        .build::<D, ceo::WfeRms>()
-        .into_input(&mut logger);
-    on_axis
+        .build::<ceo::WfeRms>()
+        .log(&mut logger)
+        .await
+        .confirm()?
         .add_output()
-        .build::<D, ceo::TipTilt>()
-        .into_input(&mut logger);
-    on_axis
+        .build::<ceo::TipTilt>()
+        .log(&mut logger)
+        .await
+        .confirm()?
         .add_output()
-        .build::<D, ceo::SegmentWfeRms>()
-        .into_input(&mut logger);
-    on_axis
+        .build::<ceo::SegmentWfeRms>()
+        .log(&mut logger)
+        .await
+        .confirm()?
         .add_output()
-        .build::<D, ceo::SegmentPiston>()
-        .into_input(&mut logger);
-    on_axis
+        .build::<ceo::SegmentPiston>()
+        .log(&mut logger)
+        .await
+        .confirm()?
         .add_output()
-        .build::<D, ceo::SegmentTipTilt>()
-        .into_input(&mut logger);
-    on_axis
+        .build::<ceo::SegmentTipTilt>()
+        .log(&mut logger)
+        .await
+        .confirm()?
         .add_output()
-        .build::<D, ceo::PSSn>()
-        .into_input(&mut logger);
-    on_axis
+        .build::<ceo::PSSn>()
+        .log(&mut logger)
+        .await
+        .confirm()?
         .add_output()
-        .build::<Vec<f32>, ceo::DetectorFrame>()
-        .into_input(&mut logger);
+        .build::<ceo::DetectorFrame>()
+        .logn(&mut logger, 512 * 512)
+        .await;
 
     let model = Model::new(vec![
         Box::new(gmt_state),
@@ -149,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
 
     model.wait().await?;
 
-    let pssn = (*logs.lock().await).get("PSSn")?;
+    let pssn: Vec<Vec<f64>> = (*logs.lock().await).get("PSSn")?;
     println!("PPSn: {pssn:?}");
     Ok(())
 }
