@@ -23,13 +23,16 @@ env_logger = "0.9.0"
 log = "0.4.16"
 serde-pickle = "1.1.0"
 parse-monitors = "0.1.0"
-fem = { version = "0.2.9", package = "gmt-fem" }
+fem = { version = "0.3.0", package = "gmt-fem" }
 lom = { version = "0.1.8", package = "gmt-lom" }
 m1-ctrl = "0.1.2"
 fsm = { version = "0.1.0", package = "m2-ctrl" }
 chrono = "0.4.19"
 crseo = "0.4.0"
 dos-actors = { version = "0.1.12", features = ["main", "fem"] }
+
+[patch.crates-io]
+dos-actors = { path = "../dos-actors" }
 
 [features]
 full = []

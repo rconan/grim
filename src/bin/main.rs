@@ -141,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
                 .sampling(sim_sampling_frequency as f64)
                 .proportional_damping(2. / 100.)
                 //.truncate_hankel_singular_values(1e-4)
-                .max_eigen_frequency(75.)
+                //.max_eigen_frequency(75.)
                 .use_static_gain_compensation(n_io)
                 .ins::<CFD2021106F>()
                 .ins::<OSSElDriveTorque>()
