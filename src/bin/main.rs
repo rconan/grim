@@ -569,11 +569,19 @@ async fn main() -> anyhow::Result<()> {
             atm_sampling,
             20f32.from_arcmin(),
             atm_duration,
-            Some("/fsx/atmosphere/atm_15mn.bin".to_owned()),
+            Some("/fsx/atmosphere/free_atm_15mn.bin".to_owned()),
             atm_n_duration,
         );
-        let gmt_builder = Gmt::builder().m1_n_mode(162);
         let tau = (sim_sampling_frequency as f64).recip();
+        let free_atm = ceo::OpticalModelOptions::Atmosphere {
+            builder: atm.remove_turbulence_layer(0),
+            time_step: tau,
+        };
+        let dome_seeing = ceo::OpticalModelOptions::DomeSeeing {
+            cfd_case: "/fsx/CASES/zen30az000_OS7".to_string(),
+            upsampling_rate: (sim_sampling_frequency / 5) as usize,
+        };        
+        let gmt_builder = Gmt::builder().m1_n_mode(162);
         let mut agws_tt7: Actor<_, 1, FSM_RATE> = {
             let mut agws_sh24 = ceo::OpticalModel::builder()
                 .gmt(gmt_builder.clone())
@@ -585,10 +593,8 @@ async fn main() -> anyhow::Result<()> {
                         ),
                         flux_threshold: 0.5,
                     },
-                    ceo::OpticalModelOptions::Atmosphere {
-                        builder: atm.clone(),
-                        time_step: tau,
-                    },
+                    free_atm.clone(),
+                    dome_seeing.clone()
                 ])
                 .build()?;
             use calibrations::Mirror;
@@ -645,10 +651,8 @@ async fn main() -> anyhow::Result<()> {
                         ),
                         flux_threshold: 0.5,
                     },
-                    ceo::OpticalModelOptions::Atmosphere {
-                        builder: atm,
-                        time_step: tau,
-                    },
+                    free_atm.clone(),
+                    dome_seeing.clone()
                 ])
                 .build()?;
             let data_repo = env::var("DATA_REPO").unwrap_or_else(|_| ".".to_string());

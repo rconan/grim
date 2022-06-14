@@ -28,8 +28,8 @@ lom = { version = "0.1.8", package = "gmt-lom" }
 m1-ctrl = "0.1.2"
 fsm = { version = "0.1.0", package = "m2-ctrl" }
 chrono = "0.4.19"
-crseo = "0.4.0"
-dos-actors = { version = "0.1.12", features = ["main", "fem"] }
+crseo = "0.4.1"
+dos-actors = { version = "0.1.16", features = ["main", "fem"] }
 
 [features]
 full = []
