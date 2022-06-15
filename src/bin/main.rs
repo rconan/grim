@@ -284,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
         use tokio::sync::Mutex;
 
         let mut source: Initiator<_> = Actor::new(cfd_loads.clone()).name("CFD Loads");
-        let mut sink = Terminator::<_>::new(logging.clone()).name("GMT State");
+        //`let mut sink = Terminator::<_>::new(logging.clone()).name("GMT State");
         // FEM
         let mut fem: Actor<_> = Actor::new(state_space.clone()).name("GMT Finite Element Model");
         // MOUNT
@@ -721,28 +721,31 @@ async fn main() -> anyhow::Result<()> {
 
         fem.add_output()
             .bootstrap()
-            .multiplex(3)
+            .multiplex(2)
             .unbounded()
             .build::<OSSM1Lcl>()
             .into_input(&mut agws_tt7)
             .into_input(&mut agws_sh48)
-            .into_input(&mut sink);
-        fem.add_output()
+            //.into_input(&mut sink)
+            .confirm()?
+            .add_output()
             .bootstrap()
-            .multiplex(3)
+            .multiplex(2)
             .unbounded()
             .build::<MCM2Lcl6D>()
             .into_input(&mut agws_tt7)
             .into_input(&mut agws_sh48)
-            .into_input(&mut sink);
-        fem.add_output()
+            //.into_input(&mut sink)
+            .confirm()?
+            .add_output()
             .bootstrap()
-            .multiplex(3)
+            .multiplex(2)
             .unbounded()
             .build::<M1modes>()
             .into_input(&mut agws_tt7)
             .into_input(&mut agws_sh48)
-            .into_input(&mut sink);
+            .confirm()?;
+        //.into_input(&mut sink);
 
         /*
         let mut mode_m1s = vec![
@@ -793,13 +796,13 @@ async fn main() -> anyhow::Result<()> {
             .build::<ceo::SensorData>()
             .into_input(&mut integrator)
             .logn(&mut sh48_log, 27 * 7)
-            .await;
-        agws_sh48
+            .await
+            .confirm()?
             .add_output()
             .build::<ceo::WfeRms>()
             .log(&mut sh48_log)
-            .await;
-        agws_sh48
+            .await
+            .confirm()?
             .add_output()
             .build::<ceo::DetectorFrame>()
             .logn(&mut sh48_log, 48 * 48 * 8 * 8 * n_sh48)
@@ -914,7 +917,7 @@ async fn main() -> anyhow::Result<()> {
             Box::new(sh24_frame_sampler),
             Box::new(sh24_frame_logger),
             Box::new(fem),
-            Box::new(sink),
+            //Box::new(sink),
         ])
         .name("im-fsm")
         .flowchart()
