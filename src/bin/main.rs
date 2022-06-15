@@ -13,6 +13,7 @@ use fem::{
     fem_io::*,
     FEM,
 };
+use grim::M1System;
 use nalgebra as na;
 use parse_monitors::cfd;
 use std::{
@@ -284,7 +285,7 @@ async fn main() -> anyhow::Result<()> {
         use tokio::sync::Mutex;
 
         let mut source: Initiator<_> = Actor::new(cfd_loads.clone()).name("CFD Loads");
-        //`let mut sink = Terminator::<_>::new(logging.clone()).name("GMT State");
+        let mut sink = Terminator::<_>::new(logging.clone()).name("GMT State");
         // FEM
         let mut fem: Actor<_> = Actor::new(state_space.clone()).name("GMT Finite Element Model");
         // MOUNT
@@ -303,30 +304,8 @@ async fn main() -> anyhow::Result<()> {
             .build::<MCM2LclForce6F>()
             .into_input(&mut fem);
 
-        // HARDPOINTS
-        let mut m1_hardpoints: Actor<_> =
-            (m1_ctrl::hp_dynamics::Controller::new(), "M1 Hardpoints").into();
-        // LOADCELLS
-        let mut m1_hp_loadcells: Actor<_, 1, M1_RATE> =
-            (m1_ctrl::hp_load_cells::Controller::new(), "M1 LoadCells").into();
-        // M1 SEGMENTS ACTUATORS
-        let mut m1_segment1: Actor<_, M1_RATE, 1> =
-            m1_ctrl::actuators::segment1::Controller::new().into();
-        let mut m1_segment2: Actor<_, M1_RATE, 1> =
-            m1_ctrl::actuators::segment2::Controller::new().into();
-        let mut m1_segment3: Actor<_, M1_RATE, 1> =
-            m1_ctrl::actuators::segment3::Controller::new().into();
-        let mut m1_segment4: Actor<_, M1_RATE, 1> =
-            m1_ctrl::actuators::segment4::Controller::new().into();
-        let mut m1_segment5: Actor<_, M1_RATE, 1> =
-            m1_ctrl::actuators::segment5::Controller::new().into();
-        let mut m1_segment6: Actor<_, M1_RATE, 1> =
-            m1_ctrl::actuators::segment6::Controller::new().into();
-        let mut m1_segment7: Actor<_, M1_RATE, 1> =
-            m1_ctrl::actuators::segment7::Controller::new().into();
-
-        //let logging = Logging::default().n_entry(2).into_arcx();
-        //let mut sink = Terminator::<_>::new(logging.clone());
+        // M1 SYSTEM
+        let mut m1_actors = M1System::<M1_RATE, SH48_RATE>::new(n_step, 27)?;
 
         let mut mount_set_point: Initiator<_> = (Signals::new(3, n_step), "Mount 0pt").into();
         mount_set_point
@@ -338,175 +317,15 @@ async fn main() -> anyhow::Result<()> {
             .build::<MountTorques>()
             .into_input(&mut fem);
 
-        /*let m1s1f_set_point: Initiator<_, M1_RATE> = Signals::new(335, n_step)
-            .output_signal(0, Signal::Constant(100f64))
-            .into();
-        let mut m1s1f_set_point: Initiator<_, M1_RATE> = (0..335)
-            .step_by(5)
-            .fold(Signals::new(335, n_step), |s, i| {
-                s.output_signal(
-                    i,
-                    Signal::Constant(rand::thread_rng().gen_range(-100f64..100f64)),
-                )
-            })
-        .into();*/
-        // M1S1 -------------------------------------------------------------------------------
-        let mut m1s1f: Actor<_, SH48_RATE, M1_RATE> = (
-            Mode2Force::<1>::new(335, 162, "m1s1mode2forces.bin")?.n_input_mode(27),
-            "M1S1_M2F",
-        )
-            .into();
-        m1s1f
-            .add_output()
-            .build::<S1SAoffsetFcmd>()
-            .into_input(&mut m1_segment1);
-        // M1S2 -------------------------------------------------------------------------------
-        let mut m1s2f: Actor<_, SH48_RATE, M1_RATE> = (
-            Mode2Force::<2>::new(335, 162, "m1s2mode2forces.bin")?.n_input_mode(27),
-            "M1S2_M2F",
-        )
-            .into();
-        m1s2f
-            .add_output()
-            .build::<S2SAoffsetFcmd>()
-            .into_input(&mut m1_segment2);
-        // M1S3 -------------------------------------------------------------------------------
-        let mut m1s3f: Actor<_, SH48_RATE, M1_RATE> = (
-            Mode2Force::<3>::new(335, 162, "m1s3mode2forces.bin")?.n_input_mode(27),
-            "M1S3_M2F",
-        )
-            .into();
-        m1s3f
-            .add_output()
-            .build::<S3SAoffsetFcmd>()
-            .into_input(&mut m1_segment3);
-        // M1S4 -------------------------------------------------------------------------------
-        let mut m1s4f: Actor<_, SH48_RATE, M1_RATE> = (
-            Mode2Force::<4>::new(335, 162, "m1s4mode2forces.bin")?.n_input_mode(27),
-            "M1S4_M2F",
-        )
-            .into();
-        m1s4f
-            .add_output()
-            .build::<S4SAoffsetFcmd>()
-            .into_input(&mut m1_segment4);
-        // M1S5 -------------------------------------------------------------------------------
-        let mut m1s5f: Actor<_, SH48_RATE, M1_RATE> = (
-            Mode2Force::<5>::new(335, 162, "m1s5mode2forces.bin")?.n_input_mode(27),
-            "M1S5_M2F",
-        )
-            .into();
-        m1s5f
-            .add_output()
-            .build::<S5SAoffsetFcmd>()
-            .into_input(&mut m1_segment5);
-        // M1S6 -------------------------------------------------------------------------------
-        let mut m1s6f: Actor<_, SH48_RATE, M1_RATE> = (
-            Mode2Force::<6>::new(335, 162, "m1s6mode2forces.bin")?.n_input_mode(27),
-            "M1S6_M2F",
-        )
-            .into();
-        m1s6f
-            .add_output()
-            .build::<S6SAoffsetFcmd>()
-            .into_input(&mut m1_segment6);
-        // M1S7 -------------------------------------------------------------------------------
-        let mut m1s7f: Actor<_, SH48_RATE, M1_RATE> = (
-            Mode2Force::<7>::new(306, 151, "m1s7mode2forces.bin")?.n_input_mode(27),
-            "M1S7_M2F",
-        )
-            .into();
-        m1s7f
-            .add_output()
-            .build::<S7SAoffsetFcmd>()
-            .into_input(&mut m1_segment7);
-
-        let mut m1rbm_set_point: Initiator<_> = (Signals::new(42, n_step), "M1 RBM 0pt").into();
-        m1rbm_set_point
-            .add_output()
-            .build::<M1RBMcmd>()
-            .into_input(&mut m1_hardpoints);
-        m1_hardpoints
-            .add_output()
-            .multiplex(2)
-            .build::<OSSHarpointDeltaF>()
-            .into_input(&mut fem)
-            .into_input(&mut m1_hp_loadcells);
-
-        m1_hp_loadcells
-            .add_output()
-            .bootstrap()
-            .build::<S1HPLC>()
-            .into_input(&mut m1_segment1);
-        m1_hp_loadcells
-            .add_output()
-            .bootstrap()
-            .build::<S2HPLC>()
-            .into_input(&mut m1_segment2);
-        m1_hp_loadcells
-            .add_output()
-            .bootstrap()
-            .build::<S3HPLC>()
-            .into_input(&mut m1_segment3);
-        m1_hp_loadcells
-            .add_output()
-            .bootstrap()
-            .build::<S4HPLC>()
-            .into_input(&mut m1_segment4);
-        m1_hp_loadcells
-            .add_output()
-            .bootstrap()
-            .build::<S5HPLC>()
-            .into_input(&mut m1_segment5);
-        m1_hp_loadcells
-            .add_output()
-            .bootstrap()
-            .build::<S6HPLC>()
-            .into_input(&mut m1_segment6);
-        m1_hp_loadcells
-            .add_output()
-            .bootstrap()
-            .build::<S7HPLC>()
-            .into_input(&mut m1_segment7);
-
-        m1_segment1
-            .add_output()
-            .build::<M1ActuatorsSegment1>()
-            .into_input(&mut fem);
-        m1_segment2
-            .add_output()
-            .build::<M1ActuatorsSegment2>()
-            .into_input(&mut fem);
-        m1_segment3
-            .add_output()
-            .build::<M1ActuatorsSegment3>()
-            .into_input(&mut fem);
-        m1_segment4
-            .add_output()
-            .build::<M1ActuatorsSegment4>()
-            .into_input(&mut fem);
-        m1_segment5
-            .add_output()
-            .build::<M1ActuatorsSegment5>()
-            .into_input(&mut fem);
-        m1_segment6
-            .add_output()
-            .build::<M1ActuatorsSegment6>()
-            .into_input(&mut fem);
-        m1_segment7
-            .add_output()
-            .build::<M1ActuatorsSegment7>()
-            .into_input(&mut fem);
-
         fem.add_output()
             .bootstrap()
             .build::<MountEncoders>()
             .into_input(&mut mount);
-        fem.add_output()
-            .bootstrap()
-            .build::<OSSHardpointD>()
-            .into_input(&mut m1_hp_loadcells);
-
+        /*         fem.add_output()
+                   .bootstrap()
+                   .build::<OSSHardpointD>()
+                   .into_input(&mut m1_hp_loadcells);
+        */
         // M2 POSITIONER COMMAND
         let mut m2_pos_cmd: Initiator<_> = (Signals::new(42, n_step), "M2 Positionners 0pt").into();
         // FSM POSITIONNER
@@ -721,31 +540,31 @@ async fn main() -> anyhow::Result<()> {
 
         fem.add_output()
             .bootstrap()
-            .multiplex(2)
+            .multiplex(3)
             .unbounded()
             .build::<OSSM1Lcl>()
             .into_input(&mut agws_tt7)
             .into_input(&mut agws_sh48)
-            //.into_input(&mut sink)
+            .into_input(&mut sink)
             .confirm()?
             .add_output()
             .bootstrap()
-            .multiplex(2)
+            .multiplex(3)
             .unbounded()
             .build::<MCM2Lcl6D>()
             .into_input(&mut agws_tt7)
             .into_input(&mut agws_sh48)
-            //.into_input(&mut sink)
+            .into_input(&mut sink)
             .confirm()?
             .add_output()
             .bootstrap()
-            .multiplex(2)
+            .multiplex(3)
             .unbounded()
             .build::<M1modes>()
             .into_input(&mut agws_tt7)
             .into_input(&mut agws_sh48)
+            .into_input(&mut sink)
             .confirm()?;
-        //.into_input(&mut sink);
 
         /*
         let mut mode_m1s = vec![
@@ -865,45 +684,27 @@ async fn main() -> anyhow::Result<()> {
             .logn(&mut sh24_frame_logger, 24 * 24 * 12 * 12)
             .await;
 
-        integrator
-            .add_output()
-            .bootstrap()
-            .multiplex(7)
-            .build::<M1ModalCmd>()
-            .into_input(&mut m1s1f)
-            .into_input(&mut m1s2f)
-            .into_input(&mut m1s3f)
-            .into_input(&mut m1s4f)
-            .into_input(&mut m1s5f)
-            .into_input(&mut m1s6f)
-            .into_input(&mut m1s7f);
-        //println!("{integrator}");
+        m1_actors
+            .segments()
+            .fold(
+                integrator
+                    .add_output()
+                    .bootstrap()
+                    .multiplex(7)
+                    .build::<M1ModalCmd>(),
+                |x, s| s.add_input(x),
+            )
+            .confirm()?;
 
         model_1.wait().await?;
 
         (*cfd_loads.lock().await).start_from(CFD_DELAY * sim_sampling_frequency);
 
-        let model = Model::new(vec![
+        let mut m1_actors = m1_actors.build(&mut fem);
+        let mut actors: Vec<Box<dyn Task>> = vec![
             Box::new(source),
             Box::new(mount_set_point),
             Box::new(mount),
-            Box::new(m1s1f),
-            Box::new(m1s2f),
-            Box::new(m1s3f),
-            Box::new(m1s4f),
-            Box::new(m1s5f),
-            Box::new(m1s6f),
-            Box::new(m1s7f),
-            Box::new(m1rbm_set_point),
-            Box::new(m1_hardpoints),
-            Box::new(m1_hp_loadcells),
-            Box::new(m1_segment1),
-            Box::new(m1_segment2),
-            Box::new(m1_segment3),
-            Box::new(m1_segment4),
-            Box::new(m1_segment5),
-            Box::new(m1_segment6),
-            Box::new(m1_segment7),
             Box::new(m2_pos_cmd),
             Box::new(m2_positionner),
             Box::new(m2_piezostack),
@@ -917,12 +718,10 @@ async fn main() -> anyhow::Result<()> {
             Box::new(sh24_frame_sampler),
             Box::new(sh24_frame_logger),
             Box::new(fem),
-            //Box::new(sink),
-        ])
-        .name("im-fsm")
-        .flowchart()
-        .check()?
-        .run();
+            Box::new(sink),
+        ];
+        actors.append(&mut m1_actors);
+        let model = Model::new(actors).name("im-fsm").flowchart().check()?.run();
 
         let logs = logging.clone();
         let progress = Arc::new(Mutex::new(Progress::new()));

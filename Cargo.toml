@@ -30,6 +30,8 @@ fsm = { version = "0.1.0", package = "m2-ctrl" }
 chrono = "0.4.19"
 crseo = "0.4.1"
 dos-actors = { version = "0.1.17", features = ["main", "fem"] }
+thiserror = "1.0.31"
+flume = "0.10.13"
 
 [features]
 full = []
