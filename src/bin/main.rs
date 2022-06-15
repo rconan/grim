@@ -580,7 +580,15 @@ async fn main() -> anyhow::Result<()> {
         let dome_seeing = ceo::OpticalModelOptions::DomeSeeing {
             cfd_case: "/fsx/CASES/zen30az000_OS7".to_string(),
             upsampling_rate: (sim_sampling_frequency / 5) as usize,
-        };        
+        };
+        let static_aberration = {
+            let gmt_modes_path = std::env::var("GMT_MODES_PATH")?;
+            let path_to_static = Path::new(&gmt_modes_path);
+            let static_phase: Vec<f32> = bincode::deserialize_from(File::open(
+                path_to_static.join("raw-polishing_print-through_soak1deg_769.bin"),
+            )?)?;
+            ceo::OpticalModelOptions::StaticAberration(static_phase.into())
+        };
         let gmt_builder = Gmt::builder().m1_n_mode(162);
         let mut agws_tt7: Actor<_, 1, FSM_RATE> = {
             let mut agws_sh24 = ceo::OpticalModel::builder()
@@ -594,7 +602,8 @@ async fn main() -> anyhow::Result<()> {
                         flux_threshold: 0.5,
                     },
                     free_atm.clone(),
-                    dome_seeing.clone()
+                    dome_seeing.clone(),
+                    static_aberration.clone(),
                 ])
                 .build()?;
             use calibrations::Mirror;
@@ -651,8 +660,9 @@ async fn main() -> anyhow::Result<()> {
                         ),
                         flux_threshold: 0.5,
                     },
-                    free_atm.clone(),
-                    dome_seeing.clone()
+                    free_atm,
+                    dome_seeing,
+                    static_aberration,
                 ])
                 .build()?;
             let data_repo = env::var("DATA_REPO").unwrap_or_else(|_| ".".to_string());
