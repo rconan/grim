@@ -1,7 +1,7 @@
 mod m1_system;
 pub use m1_system::M1System;
 
-mod agws;
+pub mod agws;
 pub use agws::AGWS;
 
 #[derive(Debug, thiserror::Error)]

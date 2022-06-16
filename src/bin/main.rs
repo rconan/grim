@@ -13,7 +13,7 @@ use fem::{
     fem_io::*,
     FEM,
 };
-use grim::M1System;
+use grim::{agws, M1System, AGWS};
 use nalgebra as na;
 use parse_monitors::cfd;
 use std::{
@@ -257,10 +257,7 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(feature = "full")]
     {
-        use crseo::{
-            calibrations, Atmosphere, Builder, Calibration, FromBuilder, Gmt, Source, SH24 as TT7,
-            SH48,
-        };
+        use crseo::{calibrations, Atmosphere, FromBuilder, Gmt};
         use dos_actors::{
             clients::{
                 arrow_client::Arrow,
@@ -276,12 +273,7 @@ async fn main() -> anyhow::Result<()> {
         use linya::{Bar, Progress};
         use lom::{Loader, LoaderTrait, OpticalSensitivities, OpticalSensitivity};
         use skyangle::Conversion;
-        use std::{
-            fs::File,
-            path::Path,
-            sync::Arc,
-            time::{Duration, Instant},
-        };
+        use std::{fs::File, path::Path, sync::Arc, time::Duration};
         use tokio::sync::Mutex;
 
         let mut source: Initiator<_> = Actor::new(cfd_loads.clone()).name("CFD Loads");
@@ -392,152 +384,196 @@ async fn main() -> anyhow::Result<()> {
             atm_n_duration,
         );
         let tau = (sim_sampling_frequency as f64).recip();
-        let free_atm = ceo::OpticalModelOptions::Atmosphere {
-            builder: atm.remove_turbulence_layer(0),
-            time_step: tau,
-        };
-        let dome_seeing = ceo::OpticalModelOptions::DomeSeeing {
-            cfd_case: "/fsx/CASES/zen30az000_OS7".to_string(),
-            upsampling_rate: (sim_sampling_frequency / 5) as usize,
-        };
-        let static_aberration = {
+        /*         let free_atm = ceo::OpticalModelOptions::Atmosphere {
+                   builder: atm.remove_turbulence_layer(0),
+                   time_step: tau,
+               };
+               let dome_seeing = ceo::OpticalModelOptions::DomeSeeing {
+                   cfd_case: "/fsx/CASES/zen30az000_OS7".to_string(),
+                   upsampling_rate: (sim_sampling_frequency / 5) as usize,
+               };
+               let static_aberration = {
+                   let gmt_modes_path = std::env::var("GMT_MODES_PATH")?;
+                   let path_to_static = Path::new(&gmt_modes_path);
+                   let static_phase: Vec<f32> = bincode::deserialize_from(File::open(
+                       path_to_static.join("raw-polishing_print-through_soak1deg_769.bin"),
+                   )?)?;
+                   ceo::OpticalModelOptions::StaticAberration(static_phase.into())
+               };
+               let gmt_builder = Gmt::builder().m1_n_mode(162);
+        */
+        let static_phase: Vec<f32> = {
             let gmt_modes_path = std::env::var("GMT_MODES_PATH")?;
             let path_to_static = Path::new(&gmt_modes_path);
-            let static_phase: Vec<f32> = bincode::deserialize_from(File::open(
+            bincode::deserialize_from(File::open(
                 path_to_static.join("raw-polishing_print-through_soak1deg_769.bin"),
-            )?)?;
-            ceo::OpticalModelOptions::StaticAberration(static_phase.into())
+            )?)?
         };
-        let gmt_builder = Gmt::builder().m1_n_mode(162);
-        let mut agws_tt7: Actor<_, 1, FSM_RATE> = {
-            let mut agws_sh24 = ceo::OpticalModel::builder()
-                .gmt(gmt_builder.clone())
-                .source(Source::builder())
-                .options(vec![
-                    ceo::OpticalModelOptions::ShackHartmann {
-                        options: ceo::ShackHartmannOptions::Diffractive(
-                            *TT7::<crseo::Diffractive>::new(),
-                        ),
-                        flux_threshold: 0.5,
-                    },
-                    free_atm.clone(),
-                    dome_seeing.clone(),
-                    static_aberration.clone(),
-                ])
-                .build()?;
-            use calibrations::Mirror;
-            use calibrations::Segment::*;
-            // GMT 2 WFS
-            println!(" - calibration ...");
-            let mut gmt2wfs = Calibration::new(
-                &agws_sh24.gmt,
-                &agws_sh24.src,
-                TT7::<crseo::Geometric>::new(),
-            );
-            let specs = vec![Some(vec![(Mirror::M2, vec![Rxyz(1e-6, Some(0..2))])]); 7];
-            let now = Instant::now();
-            gmt2wfs.calibrate(
-                specs,
-                calibrations::ValidLensletCriteria::OtherSensor(
-                    &mut agws_sh24.sensor.as_mut().unwrap(),
-                ),
-            );
-            println!(
-                "GMT 2 WFS calibration [{}x{}] in {}s",
-                gmt2wfs.n_data,
-                gmt2wfs.n_mode,
-                now.elapsed().as_secs()
-            );
-            let dof_2_wfs: Vec<f64> = gmt2wfs.poke.into();
-            let dof_2_wfs = na::DMatrix::<f64>::from_column_slice(
-                dof_2_wfs.len() / gmt2wfs.n_mode,
-                gmt2wfs.n_mode,
-                &dof_2_wfs,
-            );
-            let wfs_2_rxy = dof_2_wfs.clone().pseudo_inverse(1e-12).unwrap();
-            let senses: OpticalSensitivities = Loader::<OpticalSensitivities>::default().load()?;
-            let rxy_2_stt = senses[OpticalSensitivity::SegmentTipTilt(Vec::new())].m2_rxy()?;
-            agws_sh24.sensor_matrix_transform(rxy_2_stt * wfs_2_rxy);
-            (agws_sh24, "AGWS SH24").into()
+        let agws = AGWS::new()
+            .gmt(Gmt::builder().m1_n_mode(162))
+            .atmosphere(atm.remove_turbulence_layer(0), tau)
+            .dome_seeing(
+                "/fsx/CASES/zen30az000_OS7".to_string(),
+                (sim_sampling_frequency / 5) as usize,
+            )
+            .static_aberration(static_phase);
+        let senses: OpticalSensitivities = Loader::<OpticalSensitivities>::default().load()?;
+        let rxy_2_stt = senses[OpticalSensitivity::SegmentTipTilt(Vec::new())].m2_rxy()?;
+        use calibrations::Mirror;
+        use calibrations::Segment::*;
+        let sh24 = agws::AgwsShackHartmann::<agws::SH24, agws::Diffractive, FSM_RATE>::builder(1)
+            .flux_threshold(0.5)
+            .poker(vec![
+                Some(vec![(Mirror::M2, vec![Rxyz(1e-6, Some(0..2))])]);
+                7
+            ])
+            .left_pinv(rxy_2_stt);
+        let n_sh48 = 1;
+        let sh48 =
+            agws::AgwsShackHartmann::<agws::SH48, agws::Diffractive, SH48_RATE>::builder(n_sh48)
+                .flux_threshold(0.5)
+                .poker(vec![
+                    Some(vec![(Mirror::M1MODES, vec![Modes(1e-6, 0..27)])]);
+                    7
+                ]);
+        let (mut agws_tt7, mut agws_sh48) = match agws.build(Some(sh24), Some(sh48)) {
+            (Some(agws_tt7), Some(agws_sh48)) => (agws_tt7, agws_sh48),
+            _ => unimplemented!(),
         };
         agws_tt7
             .add_output()
             .build::<TTFB>()
             .into_input(&mut m2_tiptilt);
 
-        // OPTICAL MODEL (SH48)
-        println!("SH48");
-        let n_sh48 = 1;
-        let gmt_agws_sh48 = {
-            let mut agws_sh48 = ceo::OpticalModel::builder()
-                .gmt(gmt_builder)
-                .source(Source::builder().on_ring(6f32.from_arcmin()))
-                .options(vec![
-                    ceo::OpticalModelOptions::ShackHartmann {
-                        options: ceo::ShackHartmannOptions::Diffractive(
-                            *SH48::<crseo::Diffractive>::new().n_sensor(n_sh48),
-                        ),
-                        flux_threshold: 0.5,
-                    },
-                    free_atm,
-                    dome_seeing,
-                    static_aberration,
-                ])
-                .build()?;
-            let data_repo = env::var("DATA_REPO").unwrap_or_else(|_| ".".to_string());
-            let filename = format!("sh48x{}-diff_2_m1-modes.bin", n_sh48);
-            let poke_mat_file = Path::new(&data_repo).join(&filename);
-            let wfs_2_dof: na::DMatrix<f64> = if poke_mat_file.is_file() {
-                println!(" . Poke matrix loaded from {poke_mat_file:?}");
-                let file = File::open(poke_mat_file)?;
-                bincode::deserialize_from(file)?
-            } else {
-                println!(" - calibration ...");
-                use calibrations::Mirror;
-                use calibrations::Segment::*;
-                // GMT 2 WFS
-                let mut gmt2sh48 = Calibration::new(
-                    &agws_sh48.gmt,
-                    &agws_sh48.src,
-                    SH48::<crseo::Geometric>::new().n_sensor(n_sh48),
-                );
-                let specs = vec![Some(vec![(Mirror::M1MODES, vec![Modes(1e-6, 0..27)])]); 7];
-                let now = Instant::now();
-                gmt2sh48.calibrate(
-                    specs,
-                    calibrations::ValidLensletCriteria::OtherSensor(
-                        &mut agws_sh48.sensor.as_mut().unwrap(),
-                    ),
-                );
-                println!(
-                    "GMT 2 SH48 calibration [{}x{}] in {}s",
-                    gmt2sh48.n_data,
-                    gmt2sh48.n_mode,
-                    now.elapsed().as_secs()
-                );
-                let dof_2_wfs: Vec<f64> = gmt2sh48.poke.into();
-                let dof_2_wfs = na::DMatrix::<f64>::from_column_slice(
-                    dof_2_wfs.len() / gmt2sh48.n_mode,
-                    gmt2sh48.n_mode,
-                    &dof_2_wfs,
-                );
-                let singular_values = dof_2_wfs.singular_values();
-                let max_sv: f64 = singular_values[0];
-                let min_sv: f64 = singular_values.as_slice().iter().last().unwrap().clone();
-                let condition_number = max_sv / min_sv;
-                println!("SH48 poke matrix condition number: {condition_number:e}");
-                let wfs_2_dof = dof_2_wfs.clone().pseudo_inverse(1e-12).unwrap();
-                let mut file = File::create(&poke_mat_file)?;
-                bincode::serialize_into(&mut file, &wfs_2_dof)?;
-                println!(" . Poke matrix saved to {poke_mat_file:?}");
-                wfs_2_dof
-            };
-            agws_sh48.sensor_matrix_transform(wfs_2_dof);
-            agws_sh48.into_arcx()
-        };
-        let name = format!("AGWS SH48 (x{})", n_sh48);
-        let mut agws_sh48: Actor<_, 1, SH48_RATE> = Actor::new(gmt_agws_sh48.clone()).name(name);
+        /*         let mut agws_tt7: Actor<_, 1, FSM_RATE> = {
+                   let mut agws_sh24 = ceo::OpticalModel::builder()
+                       .gmt(gmt_builder.clone())
+                       .source(Source::builder())
+                       .options(vec![
+                           ceo::OpticalModelOptions::ShackHartmann {
+                               options: ceo::ShackHartmannOptions::Diffractive(
+                                   *TT7::<crseo::Diffractive>::new(),
+                               ),
+                               flux_threshold: 0.5,
+                           },
+                           free_atm.clone(),
+                           dome_seeing.clone(),
+                           static_aberration.clone(),
+                       ])
+                       .build()?;
+                   use calibrations::Mirror;
+                   use calibrations::Segment::*;
+                   // GMT 2 WFS
+                   println!(" - calibration ...");
+                   let mut gmt2wfs = Calibration::new(
+                       &agws_sh24.gmt,
+                       &agws_sh24.src,
+                       TT7::<crseo::Geometric>::new(),
+                   );
+                   let specs = vec![Some(vec![(Mirror::M2, vec![Rxyz(1e-6, Some(0..2))])]); 7];
+                   let now = Instant::now();
+                   gmt2wfs.calibrate(
+                       specs,
+                       calibrations::ValidLensletCriteria::OtherSensor(
+                           &mut agws_sh24.sensor.as_mut().unwrap(),
+                       ),
+                   );
+                   println!(
+                       "GMT 2 WFS calibration [{}x{}] in {}s",
+                       gmt2wfs.n_data,
+                       gmt2wfs.n_mode,
+                       now.elapsed().as_secs()
+                   );
+                   let dof_2_wfs: Vec<f64> = gmt2wfs.poke.into();
+                   let dof_2_wfs = na::DMatrix::<f64>::from_column_slice(
+                       dof_2_wfs.len() / gmt2wfs.n_mode,
+                       gmt2wfs.n_mode,
+                       &dof_2_wfs,
+                   );
+                   let wfs_2_rxy = dof_2_wfs.clone().pseudo_inverse(1e-12).unwrap();
+                   let senses: OpticalSensitivities = Loader::<OpticalSensitivities>::default().load()?;
+                   let rxy_2_stt = senses[OpticalSensitivity::SegmentTipTilt(Vec::new())].m2_rxy()?;
+                   agws_sh24.sensor_matrix_transform(rxy_2_stt * wfs_2_rxy);
+                   (agws_sh24, "AGWS SH24").into()
+               };
+               agws_tt7
+                   .add_output()
+                   .build::<TTFB>()
+                   .into_input(&mut m2_tiptilt);
 
+               // OPTICAL MODEL (SH48)
+               println!("SH48");
+               let n_sh48 = 1;
+               let gmt_agws_sh48 = {
+                   let mut agws_sh48 = ceo::OpticalModel::builder()
+                       .gmt(gmt_builder)
+                       .source(Source::builder().on_ring(6f32.from_arcmin()))
+                       .options(vec![
+                           ceo::OpticalModelOptions::ShackHartmann {
+                               options: ceo::ShackHartmannOptions::Diffractive(
+                                   *SH48::<crseo::Diffractive>::new().n_sensor(n_sh48),
+                               ),
+                               flux_threshold: 0.5,
+                           },
+                           free_atm,
+                           dome_seeing,
+                           static_aberration,
+                       ])
+                       .build()?;
+                   let data_repo = env::var("DATA_REPO").unwrap_or_else(|_| ".".to_string());
+                   let filename = format!("sh48x{}-diff_2_m1-modes.bin", n_sh48);
+                   let poke_mat_file = Path::new(&data_repo).join(&filename);
+                   let wfs_2_dof: na::DMatrix<f64> = if poke_mat_file.is_file() {
+                       println!(" . Poke matrix loaded from {poke_mat_file:?}");
+                       let file = File::open(poke_mat_file)?;
+                       bincode::deserialize_from(file)?
+                   } else {
+                       println!(" - calibration ...");
+                       use calibrations::Mirror;
+                       use calibrations::Segment::*;
+                       // GMT 2 WFS
+                       let mut gmt2sh48 = Calibration::new(
+                           &agws_sh48.gmt,
+                           &agws_sh48.src,
+                           SH48::<crseo::Geometric>::new().n_sensor(n_sh48),
+                       );
+                       let specs = vec![Some(vec![(Mirror::M1MODES, vec![Modes(1e-6, 0..27)])]); 7];
+                       let now = Instant::now();
+                       gmt2sh48.calibrate(
+                           specs,
+                           calibrations::ValidLensletCriteria::OtherSensor(
+                               &mut agws_sh48.sensor.as_mut().unwrap(),
+                           ),
+                       );
+                       println!(
+                           "GMT 2 SH48 calibration [{}x{}] in {}s",
+                           gmt2sh48.n_data,
+                           gmt2sh48.n_mode,
+                           now.elapsed().as_secs()
+                       );
+                       let dof_2_wfs: Vec<f64> = gmt2sh48.poke.into();
+                       let dof_2_wfs = na::DMatrix::<f64>::from_column_slice(
+                           dof_2_wfs.len() / gmt2sh48.n_mode,
+                           gmt2sh48.n_mode,
+                           &dof_2_wfs,
+                       );
+                       let singular_values = dof_2_wfs.singular_values();
+                       let max_sv: f64 = singular_values[0];
+                       let min_sv: f64 = singular_values.as_slice().iter().last().unwrap().clone();
+                       let condition_number = max_sv / min_sv;
+                       println!("SH48 poke matrix condition number: {condition_number:e}");
+                       let wfs_2_dof = dof_2_wfs.clone().pseudo_inverse(1e-12).unwrap();
+                       let mut file = File::create(&poke_mat_file)?;
+                       bincode::serialize_into(&mut file, &wfs_2_dof)?;
+                       println!(" . Poke matrix saved to {poke_mat_file:?}");
+                       wfs_2_dof
+                   };
+                   agws_sh48.sensor_matrix_transform(wfs_2_dof);
+                   agws_sh48.into_arcx()
+               };
+               let name = format!("AGWS SH48 (x{})", n_sh48);
+               let mut agws_sh48: Actor<_, 1, SH48_RATE> = Actor::new(gmt_agws_sh48.clone()).name(name);
+        */
         fem.add_output()
             .bootstrap()
             .multiplex(3)
@@ -739,27 +775,27 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        let sh48_progress = progress.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(1));
-            let bar: Bar = sh48_progress
-                .lock()
-                .await
-                .bar(SH48_RATE, "SH48 integration");
-            loop {
-                interval.tick().await;
-                let mut progress = sh48_progress.lock().await;
-                progress.set_and_draw(
-                    &bar,
-                    (*gmt_agws_sh48.lock().await)
-                        .sensor
-                        .as_ref()
-                        .unwrap()
-                        .n_frame(),
-                );
-            }
-        });
-
+        /*         let sh48_progress = progress.clone();
+               tokio::spawn(async move {
+                   let mut interval = tokio::time::interval(Duration::from_secs(1));
+                   let bar: Bar = sh48_progress
+                       .lock()
+                       .await
+                       .bar(SH48_RATE, "SH48 integration");
+                   loop {
+                       interval.tick().await;
+                       let mut progress = sh48_progress.lock().await;
+                       progress.set_and_draw(
+                           &bar,
+                           (*gmt_agws_sh48.lock().await)
+                               .sensor
+                               .as_ref()
+                               .unwrap()
+                               .n_frame(),
+                       );
+                   }
+               });
+        */
         model.wait().await?;
     }
 
