@@ -1,7 +1,8 @@
 mod m1_system;
-pub use m1_system::M1System;
+pub use m1_system::{M1System, Segment};
 
 pub mod agws;
+#[doc(no_inline)]
 pub use agws::AGWS;
 
 #[derive(Debug, thiserror::Error)]

@@ -364,7 +364,7 @@ impl<const R: usize, const O: usize> M1System<R, O> {
     pub fn segments(&mut self) -> impl Iterator<Item = &mut Segment<R, O>> {
         self.segments.iter_mut()
     }
-    /// Connects inputs and outputs of M1 system actors adn return the vector of actors
+    /// Connects inputs and outputs of M1 system actors and return the vector of actors
     pub fn build(
         mut self,
         fem: &mut Actor<DiscreteModalSolver<ExponentialMatrix>>,
