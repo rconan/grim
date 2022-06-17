@@ -1,6 +1,9 @@
 mod m1_system;
 pub use m1_system::{M1System, Segment};
 
+mod m2_system;
+pub use m2_system::M2System;
+
 pub mod agws;
 #[doc(no_inline)]
 pub use agws::AGWS;

@@ -13,7 +13,7 @@ use fem::{
     fem_io::*,
     FEM,
 };
-use grim::{agws, M1System, AGWS};
+use grim::{agws, M1System, M2System, AGWS};
 use nalgebra as na;
 use parse_monitors::cfd;
 use std::{
@@ -296,9 +296,6 @@ async fn main() -> anyhow::Result<()> {
             .build::<MCM2LclForce6F>()
             .into_input(&mut fem);
 
-        // M1 SYSTEM
-        let mut m1_actors = M1System::<M1_RATE, SH48_RATE>::new(n_step, 27)?;
-
         let mut mount_set_point: Initiator<_> = (Signals::new(3, n_step), "Mount 0pt").into();
         mount_set_point
             .add_output()
@@ -319,59 +316,13 @@ async fn main() -> anyhow::Result<()> {
                    .into_input(&mut m1_hp_loadcells);
         */
         // M2 POSITIONER COMMAND
-        let mut m2_pos_cmd: Initiator<_> = (Signals::new(42, n_step), "M2 Positionners 0pt").into();
-        // FSM POSITIONNER
-        let mut m2_positionner: Actor<_> =
-            (fsm::positionner::Controller::new(), "M2 Positionners").into();
-        m2_pos_cmd
-            .add_output()
-            .build::<M2poscmd>()
-            .into_input(&mut m2_positionner);
-        m2_positionner
-            .add_output()
-            .build::<MCM2SmHexF>()
-            .into_input(&mut fem);
-        // FSM PIEZOSTACK COMMAND
-        //let mut m2_pzt_cmd: Initiator<_> = (Signals::new(21, n_step), "M2_PZT_setpoint").into();
-        // FSM PIEZOSTACK
-        let mut m2_piezostack: Actor<_> =
-            (fsm::piezostack::Controller::new(), "M2 PZT Actuators").into();
-        /*m2_pzt_cmd
-        .add_output()
-        .build::< PZTcmd>()
-        .into_input(&mut m2_piezostack);*/
-        m2_piezostack
-            .add_output()
-            .build::<MCM2PZTF>()
-            .into_input(&mut fem);
 
-        fem.add_output()
-            .bootstrap()
-            .build::<MCM2SmHexD>()
-            .into_input(&mut m2_positionner);
-        fem.add_output()
-            .bootstrap()
-            .build::<MCM2PZTD>()
-            .into_input(&mut m2_piezostack);
-        // FSM TIP-TILT CONTROL
-        let mut tiptilt_set_point: Initiator<_, FSM_RATE> = (
-            Into::<Signals>::into((vec![0f64; 14], n_step)),
-            "TipTilt_setpoint",
-        )
-            .into();
-        let mut m2_tiptilt: Actor<_, FSM_RATE, 1> =
-            (fsm::tiptilt::Controller::new(), "M2 TipTilt Control").into();
-        tiptilt_set_point
-            .add_output()
-            .build::<TTSP>()
-            .into_input(&mut m2_tiptilt);
-        m2_tiptilt
-            .add_output()
-            .bootstrap()
-            .build::<PZTcmd>()
-            .into_input(&mut m2_piezostack);
+        // M1 SYSTEM
+        let mut m1_actors = M1System::<M1_RATE, SH48_RATE>::new(n_step, 27)?;
+        // M2 SYSTEM
+        let mut m2_actors = M2System::<FSM_RATE>::new(n_step);
         // AGWS OPTICAL MODEL
-        println!("SH24");
+        println!("AGWS");
         let atm_duration = 20f32;
         let atm_n_duration = Some((sim_duration / atm_duration as f64).ceil() as i32);
         let atm_sampling = 48 * 16 + 1;
@@ -425,7 +376,7 @@ async fn main() -> anyhow::Result<()> {
         agws_tt7
             .add_output()
             .build::<TTFB>()
-            .into_input(&mut m2_tiptilt);
+            .into_input(&mut m2_actors.tiptilt());
 
         fem.add_output()
             .bootstrap()
@@ -455,38 +406,7 @@ async fn main() -> anyhow::Result<()> {
             .into_input(&mut sink)
             .confirm()?;
 
-        /*
-        let mut mode_m1s = vec![
-            {
-                let mut mode = vec![0f64; 162];
-                mode[0] = 1e-6;
-                na::DVector::from_vec(mode)
-            };
-            6
-        ];
-        //mode_m1s[0][0] = 1e-6;
-        mode_m1s.push({
-            let mut mode = vec![0f64; 151];
-            mode[0] = 1e-6;
-            na::DVector::from_vec(mode)
-        });
-        let zero_point: Vec<_> = mode_m1s
-            .iter()
-            .flat_map(|x| x.as_slice().to_vec())
-            .collect();
-         */
         let zero_point = vec![0f64; 27 * 7];
-        /*
-        zero_point.chunks_mut(27).for_each(|x| {
-                x[0] = 1e-6;
-                x[26] = 2e-7;
-            });
-        */
-        /*
-            println!("{zero_point:#?}");
-            let mut m1_modes: Initiator<_, SH48_RATE> = Into::<Signals>::into((zero_point, n_step)).into();
-                //dbg!(&zero_point);
-        */
         let mut gain = vec![0.; 7 * 27];
         gain.iter_mut().skip(26).step_by(27).for_each(|g| *g = 0.5);
         let mut integrator: Actor<_, SH48_RATE, SH48_RATE> =
@@ -590,15 +510,11 @@ async fn main() -> anyhow::Result<()> {
         (*cfd_loads.lock().await).start_from(CFD_DELAY * sim_sampling_frequency);
 
         let mut m1_actors = m1_actors.build(&mut fem);
+        let mut m2_actors = m2_actors.build(&mut fem);
         let mut actors: Vec<Box<dyn Task>> = vec![
             Box::new(source),
             Box::new(mount_set_point),
             Box::new(mount),
-            Box::new(m2_pos_cmd),
-            Box::new(m2_positionner),
-            Box::new(m2_piezostack),
-            Box::new(tiptilt_set_point),
-            Box::new(m2_tiptilt),
             Box::new(agws_tt7),
             Box::new(agws_sh48),
             Box::new(integrator),
@@ -610,6 +526,7 @@ async fn main() -> anyhow::Result<()> {
             Box::new(sink),
         ];
         actors.append(&mut m1_actors);
+        actors.append(&mut m2_actors);
         let model = Model::new(actors).name("im-fsm").flowchart().check()?.run();
 
         let logs = logging.clone();
