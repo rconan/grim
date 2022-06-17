@@ -45,6 +45,19 @@ impl AGWS {
         });
         self
     }
+    fn maybe_tags(&self) -> String {
+        let mut t = vec![];
+        if self.maybe_atmosphere.is_some() {
+            t.push(" . atmosphere");
+        }
+        if self.maybe_dome_seeing.is_some() {
+            t.push(" . dome seeing");
+        }
+        if self.maybe_atmosphere.is_some() {
+            t.push(" . static aberrations");
+        }
+        format!(r"{}", t.join(r"\n"))
+    }
     /// Sets the [static aberrations](dos_actors::clients::ceo::OpticalModelOptions)
     pub fn static_aberration(mut self, phase: Vec<f32>) -> Self {
         self.maybe_aberration = Some(OpticalModelOptions::StaticAberration(phase.into()));
@@ -77,7 +90,11 @@ impl AGWS {
             ),
         );
         optical_model.sensor_matrix_transform(pinv);
-        Ok((optical_model, <K as SH24orSH48>::tag()).into())
+        Ok((
+            optical_model,
+            dbg!(format!(r"{}\n{}", wfs.tag(), self.maybe_tags())),
+        )
+            .into())
     }
     /// Builds and returns AGWS SH24 and SH48 wavefront sensors
     pub fn build<T24, T48, const SH24_RATE: usize, const SH48_RATE: usize>(
@@ -213,6 +230,14 @@ where
             (Some(left), None) => left * wfs2dof,
             (None, Some(right)) => wfs2dof * right,
             (None, None) => wfs2dof,
+        }
+    }
+    /// Returns the sensor kind
+    pub fn tag(&self) -> String {
+        if self.n_sensor == 1 {
+            <Kind as SH24orSH48>::tag()
+        } else {
+            format!("{} x{}", <Kind as SH24orSH48>::tag(), self.n_sensor)
         }
     }
 }
