@@ -8,6 +8,8 @@ pub mod agws;
 #[doc(no_inline)]
 pub use agws::AGWS;
 
+pub mod control;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed to create segment actors")]
