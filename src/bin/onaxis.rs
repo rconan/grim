@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .into_arcx();
 
+
     let mut logger = Terminator::new(logs.clone()).name("Logs");
     on_axis
         .add_output()

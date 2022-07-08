@@ -1,4 +1,3 @@
-use chrono::prelude::*;
 use dos_actors::{
     clients::{
         arrow_client::Arrow,
@@ -16,11 +15,31 @@ use fem::{
 use grim::{agws, M1System, M2System, AGWS};
 use nalgebra as na;
 use parse_monitors::cfd;
+use serde::Deserialize;
 use std::{
+    collections::HashMap,
     env,
     fs::{create_dir, File},
     path::Path,
 };
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+pub struct MonteCarlo {
+    index: usize,
+    #[serde(rename = "elevation[deg]")]
+    elevation: f64,
+    #[serde(rename = "azimuth[deg]")]
+    azimuth: f64,
+    #[serde(rename = "wind[m/s]")]
+    wind_velocity: f64,
+    #[serde(rename = "r0[m]")]
+    r0: f64,
+    #[serde(rename = "CFD case")]
+    cfd_case: String,
+    #[serde(rename = "FEM elevation")]
+    fem_elevation: i32,
+}
 
 fn fig_2_mode(sid: u32) -> na::DMatrix<f64> {
     let root_env = env::var("M1CALIBRATION").unwrap_or_else(|_| ".".to_string());
@@ -39,17 +58,43 @@ fn fig_2_mode(sid: u32) -> na::DMatrix<f64> {
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    let local: DateTime<Local> = Local::now();
-    let data_path = Path::new("/fsx").join("grim").join(local.to_rfc3339());
+    let data_repo_env = env::var("DATA_REPO").expect("DATA_REPO env var is not set");
+    let data_repo = Path::new(&data_repo_env);
+    let job_idx = env::var("AWS_BATCH_JOB_ARRAY_INDEX")
+        .expect("AWS_BATCH_JOB_ARRAY_INDEX env var missing")
+        .parse::<usize>()
+        .expect("AWS_BATCH_JOB_ARRAY_INDEX parsing failed");
+
+    let mut rdr = csv::Reader::from_path(data_repo.join("monte-carlo.csv"))?;
+    let monte_carlo: MonteCarlo = rdr.deserialize().nth(job_idx).expect(&format!(
+        "failed to load Monte-Carlo parameters #{}",
+        job_idx
+    ))?;
+    println!("Monte-Carlo parameters:");
+    println!("{:#?}", monte_carlo);
+
+    /*     env::set_var(
+           "FEM_REPO",
+           format!(
+               "/fsx/MT_mount_zen_{:02}_m1HFN_FSM",
+               90 - monte_carlo.fem_elevation
+           ),
+       );
+    */
+    let data_path = data_repo.join(format!("monte-carlo_{:04}", job_idx));
     create_dir(&data_path)?;
     println!("Data repository: {:?}", &data_path);
     env::set_var("DATA_REPO", data_path);
+
+    let cfd_case = monte_carlo.cfd_case;
+    let cfd_path = cfd::Baseline::<2021>::path().join(cfd_case.clone());
 
     let sim_sampling_frequency = 1000_usize;
 
     const CFD_RATE: usize = 1;
     const CFD_DELAY: usize = 10; // seconds
     let cfd_sampling_frequency = sim_sampling_frequency / CFD_RATE;
+    println!("CFD CASE ({}Hz): {}", cfd_sampling_frequency, cfd_case);
 
     const M1_RATE: usize = 10;
     assert_eq!(sim_sampling_frequency / M1_RATE, 100); // Hz
@@ -63,6 +108,17 @@ async fn main() -> anyhow::Result<()> {
     let n_sh48_exposure = env::var("SH48_N_STEP")?.parse::<usize>()?;
     let sim_duration = (CFD_DELAY + n_sh48_exposure * SH48_RATE / sim_sampling_frequency) as f64;
     log::info!("Simulation duration: {:6.3}s", sim_duration);
+
+    let mut meta_data: HashMap<String, String> = HashMap::new();
+    meta_data.insert(
+        "sim_sampling_frequency".to_string(),
+        format!("{sim_sampling_frequency}"),
+    );
+    meta_data.insert("CFD_DELAY".to_string(), format!("{CFD_DELAY}"));
+    meta_data.insert("M1_RATE".to_string(), format!("{M1_RATE}"));
+    meta_data.insert("SH48_RATE".to_string(), format!("{SH48_RATE}"));
+    meta_data.insert("FSM_RATE".to_string(), format!("{FSM_RATE}"));
+    meta_data.insert("SH48_N_STEP".to_string(), format!("{n_sh48_exposure}"));
 
     let (cfd_loads, state_space) = {
         use dos_actors::clients::windloads::WindLoads::*;
@@ -81,9 +137,7 @@ async fn main() -> anyhow::Result<()> {
         let n_io = (fem.n_inputs(), fem.n_outputs());
         //println!("{}", fem);
         //println!("{}", fem);
-        let cfd_case = cfd::CfdCase::<2021>::colloquial(30, 0, "os", 7)?;
-        println!("CFD CASE ({}Hz): {}", cfd_sampling_frequency, cfd_case);
-        let cfd_path = cfd::Baseline::<2021>::path().join(cfd_case.to_string());
+        //let cfd_case = cfd::CfdCase::<2021>::colloquial(30, 0, "os", 7)?;
 
         let cfd_loads =
             windloads::CfdLoads::foh(cfd_path.to_str().unwrap(), sim_sampling_frequency)
@@ -141,9 +195,9 @@ async fn main() -> anyhow::Result<()> {
             DiscreteModalSolver::<ExponentialMatrix>::from_fem(fem)
                 .sampling(sim_sampling_frequency as f64)
                 .proportional_damping(2. / 100.)
-                //.truncate_hankel_singular_values(1e-4)
+                .truncate_hankel_singular_values(1e-4)
                 //.max_eigen_frequency(75.)
-                .use_static_gain_compensation(n_io)
+                //.use_static_gain_compensation(n_io)
                 .ins::<CFD2021106F>()
                 .ins::<OSSElDriveTorque>()
                 .ins::<OSSAzDriveTorque>()
@@ -182,10 +236,12 @@ async fn main() -> anyhow::Result<()> {
 
     let n_step = (sim_duration * sim_sampling_frequency as f64) as usize;
     let logging = Arrow::builder(n_step)
+        .metadata(meta_data)
         .filename("grim.parquet")
         .build()
         .into_arcx();
-    let mnt_ctrl = Mount::at_elevation(30)?.into_arcx();
+    //let mnt_ctrl = Mount::at_zenith_angle(90 - monte_carlo.fem_elevation)?.into_arcx();
+    let mnt_ctrl = Mount::at_zenith_angle(30)?.into_arcx();
 
     (*cfd_loads.lock().await).stop_after(CFD_DELAY * sim_sampling_frequency);
 
@@ -196,6 +252,28 @@ async fn main() -> anyhow::Result<()> {
         let mut fem: Actor<_> = Actor::new(state_space.clone());
         // MOUNT
         let mut mount: Actor<_> = Actor::new(mnt_ctrl.clone());
+
+        /*         let mut cfd_202110_6f: Initiator<_> = Signals::new(
+            <CfdLoads<windloads::FOH> as dos_actors::Size<CFD2021106F>>::len(
+                &*cfd_loads.lock().await,
+            ),
+            CFD_DELAY * sim_sampling_frequency,
+        )
+        .into();
+        let mut oss_m1_lcl_6f: Initiator<_> = Signals::new(
+            <CfdLoads<windloads::FOH> as dos_actors::Size<OSSM1Lcl6F>>::len(
+                &*cfd_loads.lock().await,
+            ),
+            CFD_DELAY * sim_sampling_frequency,
+        )
+        .into();
+        let mut mc_m2_lcl_6f: Initiator<_> = Signals::new(
+            <CfdLoads<windloads::FOH> as dos_actors::Size<MCM2LclForce6F>>::len(
+                &*cfd_loads.lock().await,
+            ),
+            CFD_DELAY * sim_sampling_frequency,
+        )
+        .into(); */
 
         source
             .add_output()
@@ -260,7 +338,6 @@ async fn main() -> anyhow::Result<()> {
         use crseo::{calibrations, Atmosphere, FromBuilder, Gmt};
         use dos_actors::{
             clients::{
-                arrow_client::Arrow,
                 ceo,
                 ceo::M1modes,
                 fsm::*,
@@ -283,6 +360,27 @@ async fn main() -> anyhow::Result<()> {
         // MOUNT
         let mut mount: Actor<_> = Actor::new(mnt_ctrl.clone()).name("Mount Control");
 
+        /*         let mut cfd_202110_6f: Initiator<_> = Signals::new(
+            <CfdLoads<windloads::FOH> as dos_actors::Size<CFD2021106F>>::len(
+                &*cfd_loads.lock().await,
+            ),
+            n_sh48_exposure * SH48_RATE,
+        )
+        .into();
+        let mut oss_m1_lcl_6f: Initiator<_> = Signals::new(
+            <CfdLoads<windloads::FOH> as dos_actors::Size<OSSM1Lcl6F>>::len(
+                &*cfd_loads.lock().await,
+            ),
+            n_sh48_exposure * SH48_RATE,
+        )
+        .into();
+        let mut mc_m2_lcl_6f: Initiator<_> = Signals::new(
+            <CfdLoads<windloads::FOH> as dos_actors::Size<MCM2LclForce6F>>::len(
+                &*cfd_loads.lock().await,
+            ),
+            n_sh48_exposure * SH48_RATE,
+        )
+        .into(); */
         source
             .add_output()
             .build::<CFD2021106F>()
@@ -310,12 +408,6 @@ async fn main() -> anyhow::Result<()> {
             .bootstrap()
             .build::<MountEncoders>()
             .into_input(&mut mount);
-        /*         fem.add_output()
-                   .bootstrap()
-                   .build::<OSSHardpointD>()
-                   .into_input(&mut m1_hp_loadcells);
-        */
-        // M2 POSITIONER COMMAND
 
         // M1 SYSTEM
         let mut m1_actors = M1System::<M1_RATE, SH48_RATE>::new(n_step, 27)?;
@@ -323,39 +415,49 @@ async fn main() -> anyhow::Result<()> {
         let mut m2_actors = M2System::<FSM_RATE>::new(n_step);
         // AGWS OPTICAL MODEL
         println!("AGWS");
-        let atm_duration = 20f32;
-        let atm_n_duration = Some((sim_duration / atm_duration as f64).ceil() as i32);
-        let atm_sampling = 48 * 16 + 1;
-        let atm = Atmosphere::builder().ray_tracing(
-            25.5,
-            atm_sampling,
-            20f32.from_arcmin(),
-            atm_duration,
-            Some("/fsx/atmosphere/free_atm_15mn.bin".to_owned()),
-            atm_n_duration,
-        );
-        let tau = (sim_sampling_frequency as f64).recip();
-        let static_phase: Vec<f32> = {
-            let gmt_modes_path = std::env::var("GMT_MODES_PATH")?;
-            let path_to_static = Path::new(&gmt_modes_path);
-            bincode::deserialize_from(File::open(
-                path_to_static.join("raw-polishing_print-through_soak1deg_769.bin"),
-            )?)?
-        };
-        let agws = AGWS::new()
-            .gmt(Gmt::builder().m1_n_mode(162))
-            .atmosphere(atm.remove_turbulence_layer(0), tau)
-            .dome_seeing(
-                "/fsx/CASES/zen30az000_OS7".to_string(),
+
+        let mut agws = AGWS::new().gmt(Gmt::builder().m1_n_mode(162));
+        if let Ok(_) = env::var("WITH_ATMOSPHERE") {
+            println!("WITH_ATMOSPHERE");
+            let atm_duration = 20f32;
+            let atm_n_duration = Some((sim_duration / atm_duration as f64).ceil() as i32);
+            let atm_sampling = 48 * 16 + 1;
+            let atm = Atmosphere::builder()
+                .ray_tracing(
+                    25.5,
+                    atm_sampling,
+                    20f32.from_arcmin(),
+                    atm_duration,
+                    Some("/fsx/atmosphere/free_atm_15mn.bin".to_owned()),
+                    atm_n_duration,
+                )
+                .remove_turbulence_layer(0)
+                .r0_at_zenith(monte_carlo.r0);
+            let tau = (sim_sampling_frequency as f64).recip();
+            agws = agws.atmosphere(atm, tau);
+        }
+        if let Ok(_) = env::var("WITH_DOME_SEEING") {
+            println!("WITH_DOME_SEEING");
+            agws = agws.dome_seeing(
+                cfd_path.to_str().unwrap().to_string(),
                 (sim_sampling_frequency / 5) as usize,
-            )
-            .static_aberration(static_phase);
+            );
+        }
+        if let Ok(var) = env::var("WITH_STATIC_ABERRATION") {
+            println!("WITH_STATIC_ABERRATION: {var}");
+            let static_phase: Vec<f32> = bincode::deserialize_from(File::open(var)?)?;
+            agws = agws.static_aberration(static_phase);
+        }
         let senses: OpticalSensitivities = Loader::<OpticalSensitivities>::default().load()?;
         let rxy_2_stt = senses[OpticalSensitivity::SegmentTipTilt(Vec::new())].m2_rxy()?;
         use calibrations::Mirror;
         use calibrations::Segment::*;
-        let sh24 = agws::AgwsShackHartmann::<agws::SH24, agws::Diffractive, FSM_RATE>::builder(1)
-            .flux_threshold(0.5)
+        let sh24 = agws::AgwsShackHartmann::<agws::SH24, agws::Geometric, FSM_RATE>::builder(1)
+            .guide_star(
+                crseo::Source::builder()
+                    .zenith_azimuth(vec![6f32.from_arcmin()], vec![30f32.to_radians()]),
+            )
+            .flux_threshold(0.8)
             .poker(vec![
                 Some(vec![(Mirror::M2, vec![Rxyz(1e-6, Some(0..2))])]);
                 7
@@ -363,8 +465,12 @@ async fn main() -> anyhow::Result<()> {
             .left_pinv(rxy_2_stt);
         let n_sh48 = 1;
         let sh48 =
-            agws::AgwsShackHartmann::<agws::SH48, agws::Diffractive, SH48_RATE>::builder(n_sh48)
-                .flux_threshold(0.5)
+            agws::AgwsShackHartmann::<agws::SH48, agws::Geometric, SH48_RATE>::builder(n_sh48)
+                .guide_star(
+                    crseo::Source::builder()
+                        .zenith_azimuth(vec![8f32.from_arcmin()], vec![120f32.to_radians()]),
+                )
+                .flux_threshold(0.8)
                 .poker(vec![
                     Some(vec![(Mirror::M1MODES, vec![Modes(1e-6, 0..27)])]);
                     7
@@ -404,91 +510,16 @@ async fn main() -> anyhow::Result<()> {
             .confirm()?;
 
         let zero_point = vec![0f64; 27 * 7];
-        let mut gain = vec![0.; 7 * 27];
-        gain.iter_mut().skip(26).step_by(27).for_each(|g| *g = 0.5);
         let mut integrator: Actor<_, SH48_RATE, SH48_RATE> =
             Integrator::<f64, ceo::SensorData>::new(27 * 7)
-                //.gain_vector(gain)
                 .gain(0.5)
                 .zero(zero_point)
                 .into();
-        let sh48_arrow = Arrow::builder(n_step).filename("sh48.parquet").build();
-        let mut sh48_log: Terminator<_, SH48_RATE> = (sh48_arrow, "SH48_Log").into();
 
         agws_sh48
             .add_output()
-            .multiplex(2)
             .build::<ceo::SensorData>()
-            .into_input(&mut integrator)
-            .logn(&mut sh48_log, 27 * 7)
-            .await
-            .confirm()?
-            .add_output()
-            .build::<ceo::WfeRms>()
-            .log(&mut sh48_log)
-            .await
-            .confirm()?
-            .add_output()
-            .build::<ceo::DetectorFrame>()
-            .logn(&mut sh48_log, 48 * 48 * 8 * 8 * n_sh48)
-            .await;
-
-        let sh24_arrow = Arrow::builder(n_step)
-            .filename("sh24.parquet")
-            //.decimation(10)
-            .build();
-        let mut sh24_log: Terminator<_, FSM_RATE> = (sh24_arrow, "SH24_Log").into();
-
-        agws_tt7
-            .add_output()
-            .build::<ceo::WfeRms>()
-            .log(&mut sh24_log)
-            .await;
-        agws_tt7
-            .add_output()
-            .build::<ceo::TipTilt>()
-            .log(&mut sh24_log)
-            .await;
-        agws_tt7
-            .add_output()
-            .build::<ceo::SegmentWfeRms>()
-            .log(&mut sh24_log)
-            .await;
-        agws_tt7
-            .add_output()
-            .build::<ceo::SegmentPiston>()
-            .log(&mut sh24_log)
-            .await;
-        agws_tt7
-            .add_output()
-            .build::<ceo::SegmentTipTilt>()
-            .log(&mut sh24_log)
-            .await;
-
-        #[derive(UID)]
-        #[uid(data = "Vec<f32>")]
-        enum SH24Frame {}
-        let mut sh24_frame_sampler: Actor<_, FSM_RATE, { FSM_RATE * 200 }> = (
-            Sampler::<Vec<f32>, ceo::DetectorFrame, SH24Frame>::default(),
-            "SH24 Frame",
-        )
-            .into();
-        agws_tt7
-            .add_output()
-            .build::<ceo::DetectorFrame>()
-            .into_input(&mut &mut sh24_frame_sampler);
-        let mut sh24_frame_logger: Terminator<_, { FSM_RATE * 200 }> = (
-            Arrow::builder(n_step)
-                .filename("sh24-frame.parquet")
-                .build(),
-            "SH24 Frame Logs",
-        )
-            .into();
-        sh24_frame_sampler
-            .add_output()
-            .build::<SH24Frame>()
-            .logn(&mut sh24_frame_logger, 24 * 24 * 12 * 12)
-            .await;
+            .into_input(&mut integrator);
 
         m1_actors
             .segments()
@@ -515,16 +546,16 @@ async fn main() -> anyhow::Result<()> {
             Box::new(agws_tt7),
             Box::new(agws_sh48),
             Box::new(integrator),
-            Box::new(sh48_log),
-            Box::new(sh24_log),
-            Box::new(sh24_frame_sampler),
-            Box::new(sh24_frame_logger),
             Box::new(fem),
             Box::new(sink),
         ];
         actors.append(&mut m1_actors);
         actors.append(&mut m2_actors);
-        let model = Model::new(actors).name("im-fsm").flowchart().check()?.run();
+        let model = Model::new(actors)
+            .name("monte-carlo")
+            .flowchart()
+            .check()?
+            .run();
 
         let logs = logging.clone();
         let progress = Arc::new(Mutex::new(Progress::new()));
@@ -542,45 +573,8 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        /*         let sh48_progress = progress.clone();
-               tokio::spawn(async move {
-                   let mut interval = tokio::time::interval(Duration::from_secs(1));
-                   let bar: Bar = sh48_progress
-                       .lock()
-                       .await
-                       .bar(SH48_RATE, "SH48 integration");
-                   loop {
-                       interval.tick().await;
-                       let mut progress = sh48_progress.lock().await;
-                       progress.set_and_draw(
-                           &bar,
-                           (*gmt_agws_sh48.lock().await)
-                               .sensor
-                               .as_ref()
-                               .unwrap()
-                               .n_frame(),
-                       );
-                   }
-               });
-        */
         model.wait().await?;
     }
 
-    /*
-    let lom = LOM::builder()
-        .rigid_body_motions_record((*logging.lock().await).record()?)?
-        .build()?;
-    let segment_tiptilt = lom.segment_tiptilt();
-
-    let tau = (sim_sampling_frequency as f64).recip();
-    let _: complot::Plot = ((
-        segment_tiptilt
-            .items()
-            .enumerate()
-            .map(|(i, data)| (i as f64 * tau, data.to_owned().to_mas())),
-        None,
-    ))
-        .into();
-    */
     Ok(())
 }

@@ -68,14 +68,22 @@ Resources:
             Value: /fsx/20220308_1335_MT_mount_zen_30_m1HFN_FSM/
           - Name: CFD_REPO
             Value: /fsx/CASES
+          - Name: DATA_REPO
+            Value: /fsx/grim
           - Name: M1CALIBRATION
             Value: /fsx/m1calibration/
           - Name: GMT_MODES_PATH
             Value: /fsx/ceo/
           - Name: SH48_N_STEP
-            Value: 5
+            Value: 10
           - Name: LOM
             Value: /fsx
+          - Name: WITH_ATMOSPHERE
+            Value: ON          
+          - Name: WITH_DOME_SEEING
+            Value: ON          
+          - Name: WITH_STATIC_ABERRATION
+            Value: /fsx/ceo/raw-polishing_print-through_769.bin
         Image: 378722409401.dkr.ecr.us-west-2.amazonaws.com/gmto.im/grim:latest
         ResourceRequirements:
           - Type: VCPU

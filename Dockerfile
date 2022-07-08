@@ -10,14 +10,17 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 ADD Cargo.toml /test/
 #ADD src/main.rs /test/src/
 COPY ./src  /test/src
+COPY ./monte-carlo  /test/monte-carlo
 WORKDIR /test 
 
 RUN git clone -b rust https://github.com/rconan/ceo.git
 RUN cd ceo && make all install
 COPY modal_state_space_model_2ndOrder.zip /
 ENV FEM_REPO="/"
-RUN cargo build --release --features full --bin main
+RUN cargo build --release --features full --bin monte-carlo
+RUN cargo build --release --package monte-carlo --bin monte-carlo-bench
 
 FROM nvidia/cuda:10.1-runtime-ubuntu18.04
 
-COPY --from=build /test/target/release/main grim
+COPY --from=build /test/target/release/monte-carlo grim
+COPY --from=build /test/target/release/monte-carlo-bench grim-bench
