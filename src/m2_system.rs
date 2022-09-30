@@ -1,17 +1,9 @@
 //! # GMT M2 system
 
-use dos_actors::{
-    clients::{
-        fsm::{M2poscmd, PZTcmd, TTSP},
-        Signals,
-    },
-    Actor, AddOuput, Initiator, IntoInputs, Task,
-};
-use fem::{
-    dos::{DiscreteModalSolver, ExponentialMatrix},
-    fem_io::{MCM2SmHexD, MCM2SmHexF, MCM2PZTD, MCM2PZTF},
-};
-use fsm::{piezostack, positionner, tiptilt};
+use dos_actors::{clients::Signals, Actor, AddOuput, Initiator, IntoInputs, Task};
+use dos_clients_io::{M2FSMPiezoForces, M2FSMPiezoNodes, M2PositionerForces, M2PositionerNodes};
+use fem::dos::{DiscreteModalSolver, ExponentialMatrix};
+use m2_ctrl::{piezostack, positionner, tiptilt, M2poscmd, PZTcmd, TTSP};
 
 /// M2 system actors
 ///
@@ -59,19 +51,19 @@ impl<const FSM_RATE: usize> M2System<FSM_RATE> {
             .into_input(&mut self.positionner);
         self.positionner
             .add_output()
-            .build::<MCM2SmHexF>()
+            .build::<M2PositionerForces>()
             .into_input(fem);
         self.piezostack
             .add_output()
-            .build::<MCM2PZTF>()
+            .build::<M2FSMPiezoForces>()
             .into_input(fem);
         fem.add_output()
             .bootstrap()
-            .build::<MCM2SmHexD>()
+            .build::<M2PositionerNodes>()
             .into_input(&mut self.positionner);
         fem.add_output()
             .bootstrap()
-            .build::<MCM2PZTD>()
+            .build::<M2FSMPiezoNodes>()
             .into_input(&mut self.piezostack);
         self.tiptilt_set_point
             .add_output()

@@ -4,14 +4,7 @@ use std::sync::Arc;
 
 use crate::{Error, Result};
 use dos_actors::{
-    clients::{
-        m1::{
-            M1RBMcmd, Mode2Force, S1SAoffsetFcmd, S2SAoffsetFcmd, S3SAoffsetFcmd, S4SAoffsetFcmd,
-            S5SAoffsetFcmd, S6SAoffsetFcmd, S7SAoffsetFcmd, S1HPLC, S2HPLC, S3HPLC, S4HPLC, S5HPLC,
-            S6HPLC, S7HPLC,
-        },
-        Signals,
-    },
+    clients::Signals,
     io::{Data, Write},
     prelude::UniqueIdentifier,
     Actor, AddOuput, Initiator, IntoInputs, Task, Update,
@@ -26,7 +19,9 @@ use fem::{
 };
 use m1_ctrl::{
     actuators::{segment1, segment2, segment3, segment4, segment5, segment6, segment7},
-    hp_dynamics, hp_load_cells,
+    hp_dynamics, hp_load_cells, M1RBMcmd, Mode2Force, S1SAoffsetFcmd, S2SAoffsetFcmd,
+    S3SAoffsetFcmd, S4SAoffsetFcmd, S5SAoffsetFcmd, S6SAoffsetFcmd, S7SAoffsetFcmd, S1HPLC, S2HPLC,
+    S3HPLC, S4HPLC, S5HPLC, S6HPLC, S7HPLC,
 };
 
 const U: usize = 1;
@@ -292,14 +287,14 @@ impl<const R: usize, const O: usize> Segment<R, O> {
     )
     where
         DU: 'static + UniqueIdentifier<Data = Vec<f64>>,
-        CO: 'static + Update + Send + Write<Vec<f64>, DU>,
-        Mode2Force<1_usize>: dos_actors::io::Read<Vec<f64>, DU>,
-        Mode2Force<2_usize>: dos_actors::io::Read<Vec<f64>, DU>,
-        Mode2Force<3_usize>: dos_actors::io::Read<Vec<f64>, DU>,
-        Mode2Force<4_usize>: dos_actors::io::Read<Vec<f64>, DU>,
-        Mode2Force<5_usize>: dos_actors::io::Read<Vec<f64>, DU>,
-        Mode2Force<6_usize>: dos_actors::io::Read<Vec<f64>, DU>,
-        Mode2Force<7_usize>: dos_actors::io::Read<Vec<f64>, DU>,
+        CO: 'static + Update + Send + Write<DU>,
+        Mode2Force<1_usize>: dos_actors::io::Read<DU>,
+        Mode2Force<2_usize>: dos_actors::io::Read<DU>,
+        Mode2Force<3_usize>: dos_actors::io::Read<DU>,
+        Mode2Force<4_usize>: dos_actors::io::Read<DU>,
+        Mode2Force<5_usize>: dos_actors::io::Read<DU>,
+        Mode2Force<6_usize>: dos_actors::io::Read<DU>,
+        Mode2Force<7_usize>: dos_actors::io::Read<DU>,
     {
         match self {
             Self::S1 {

@@ -33,12 +33,12 @@ impl Rxy2RBM {
     }
 }
 impl Update for Rxy2RBM {}
-impl Read<Vec<f64>, Rxy> for Rxy2RBM {
+impl Read< Rxy> for Rxy2RBM {
     fn read(&mut self, data: Arc<Data<Rxy>>) {
         self.rxy = data.clone();
     }
 }
-impl Write<Vec<f64>, M2rbm> for Rxy2RBM {
+impl Write< M2rbm> for Rxy2RBM {
     fn write(&mut self) -> Option<Arc<Data<M2rbm>>> {
         let data: &[f64] = &self.rxy;
         let rbm: Vec<f64> = data
@@ -59,7 +59,7 @@ pub struct Alias<T: Default> {
     data: T,
 }
 impl<T: Default> Update for Alias<T> {}
-impl<T, U> Write<T, U> for Alias<T>
+impl<T, U> Write< U> for Alias<T>
 where
     T: Default + Clone,
     U: UniqueIdentifier<Data = T>,
@@ -68,7 +68,7 @@ where
         Some(Arc::new(Data::new(self.data.clone())))
     }
 }
-impl<T, U> Read<T, U> for Alias<T>
+impl<T, U> Read< U> for Alias<T>
 where
     T: Default + ToOwned<Owned = T>,
     U: UniqueIdentifier<Data = T>,
@@ -101,13 +101,13 @@ impl Fsm {
     }
 }
 impl Update for Fsm {}
-impl Read<Vec<f64>, Rxy> for Fsm {
+impl Read< Rxy> for Fsm {
     fn read(&mut self, data: Arc<Data<Rxy>>) {
         let inner: &[f64] = &data;
         self.data = inner.to_vec();
     }
 }
-impl Write<Vec<f64>, M2rbm> for Fsm {
+impl Write< M2rbm> for Fsm {
     fn write(&mut self) -> Option<Arc<Data<M2rbm>>> {
         self.dynamics
             .step(self.data.as_slice())
@@ -293,7 +293,7 @@ async fn main() -> anyhow::Result<()> {
             .await;
 
         let mut integrator: Actor<_, 5, 1> =
-            Integrator::<f64, SensorData>::new(14).gain(0.3).into();
+            Integrator::new(14).gain(0.3).into();
         let mut fsm: Actor<_> = (Fsm::new(), "FSM").into();
         //let mut rxy2rbm: Actor<_, 1, 1> = Rxy2RBM::new().into();
 

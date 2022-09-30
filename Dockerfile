@@ -18,9 +18,9 @@ RUN cd ceo && make all install
 COPY modal_state_space_model_2ndOrder.zip /
 ENV FEM_REPO="/"
 RUN cargo build --release --features full --bin monte-carlo
-RUN cargo build --release --package monte-carlo --bin monte-carlo-bench
+RUN cargo build --release --package monte-carlo --bin bench
 
 FROM nvidia/cuda:10.1-runtime-ubuntu18.04
 
 COPY --from=build /test/target/release/monte-carlo grim
-COPY --from=build /test/target/release/monte-carlo-bench grim-bench
+COPY --from=build /test/target/release/bench grim-bench

@@ -6,10 +6,8 @@ use crseo::{
     wavefrontsensor::Model,
     AtmosphereBuilder, Builder, Calibration, GmtBuilder, ShackHartmannBuilder, SourceBuilder,
 };
-use dos_actors::{
-    clients::ceo::{OpticalModel, OpticalModelOptions, ShackHartmannOptions},
-    Actor,
-};
+use crseo_client::{OpticalModel, OpticalModelOptions, ShackHartmannOptions};
+use dos_actors::Actor;
 use nalgebra as na;
 use std::{iter::once, marker::PhantomData, time::Instant};
 

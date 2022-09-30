@@ -12,28 +12,10 @@ use dos_actors::{
     },
     prelude::*,
 };
+use monte_carlo::MonteCarlo;
 use parse_monitors::cfd;
-use serde::Deserialize;
 use skyangle::Conversion;
 use vec_box::vec_box;
-
-#[derive(Deserialize, Debug)]
-#[allow(dead_code)]
-pub struct MonteCarlo {
-    index: usize,
-    #[serde(rename = "elevation[deg]")]
-    elevation: f64,
-    #[serde(rename = "azimuth[deg]")]
-    azimuth: f64,
-    #[serde(rename = "wind[m/s]")]
-    wind_velocity: f64,
-    #[serde(rename = "r0[m]")]
-    r0: f64,
-    #[serde(rename = "CFD case")]
-    cfd_case: String,
-    #[serde(rename = "FEM elevation")]
-    fem_elevation: i32,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -46,13 +28,9 @@ async fn main() -> anyhow::Result<()> {
         .parse::<usize>()
         .expect("AWS_BATCH_JOB_ARRAY_INDEX parsing failed");
 
-    let mut rdr = csv::Reader::from_path(data_repo.join("monte-carlo.csv"))?;
-    let monte_carlo: MonteCarlo = rdr.deserialize().nth(job_idx % 100).expect(&format!(
-        "failed to load Monte-Carlo parameters #{}",
-        job_idx
-    ))?;
+    let monte_carlo = MonteCarlo::new(data_repo.join("monte-carlo.csv"), job_idx % 100)?;
     println!("Monte-Carlo parameters:");
-    println!("{:#?}", monte_carlo);
+    println!("{monte_carlo}");
 
     let data_path = data_repo.join(format!("monte-carlo_{:04}", job_idx));
     println!("Data repository: {:?}", &data_path);
@@ -110,7 +88,8 @@ async fn main() -> anyhow::Result<()> {
                 atm_n_duration,
             )
             .remove_turbulence_layer(0)
-            .r0_at_zenith(monte_carlo.r0);
+            .r0_at_zenith(monte_carlo.r0)
+            .zenith_angle((90f64 - monte_carlo.elevation).to_radians());
         let atm = Atmosphere::builder()
             .ray_tracing(
                 25.5,
@@ -120,7 +99,8 @@ async fn main() -> anyhow::Result<()> {
                 Some("/fsx/atmosphere/atm_15mn.bin".to_owned()),
                 atm_n_duration,
             )
-            .r0_at_zenith(monte_carlo.r0);
+            .r0_at_zenith(monte_carlo.r0)
+            .zenith_angle((90f64 - monte_carlo.elevation).to_radians());
         let tau = (sim_sampling_frequency as f64).recip();
         options.push(OpticalModelOptions::Atmosphere {
             builder: free_atm,
@@ -148,8 +128,11 @@ async fn main() -> anyhow::Result<()> {
     options.push(pssn.clone());
     options_ref.push(pssn);
 
+    let photometry = env::var("PHOTOMETRY").unwrap_or("V".to_string());
+    println!("Photometry: {photometry} band");
     let src = crseo::Source::builder()
         .pupil_sampling(48 * 16 + 1)
+        .band(photometry.as_str())
         .field_delaunay21();
     println!("Sources (zenith[arcmin],azimuth[degree]):");
     src.zenith
@@ -180,8 +163,13 @@ async fn main() -> anyhow::Result<()> {
             .build()?
             .into_arcx();
         let mut on_axis_ref: Actor<_> = Actor::new(on_axis_ref_mdl.clone()).name("Ref. On-Axis");
-        let mut logs_ref: Terminator<_> =
-            (Arrow::builder(n_step).filename("ref").build(), "Ref. Logs").into();
+        let mut logs_ref: Terminator<_> = (
+            Arrow::builder(n_step)
+                .filename(format!("ref-{photometry}"))
+                .build(),
+            "Ref. Logs",
+        )
+            .into();
 
         timer_output = timer_output.into_input(&mut on_axis_ref);
         on_axis_ref
@@ -221,7 +209,9 @@ async fn main() -> anyhow::Result<()> {
         let mut on_axis: Actor<_> = Actor::new(on_axis_mdl.clone()).name("Sim. On-Axis");
 
         let mut logs: Terminator<_> = (
-            Arrow::builder(n_step).filename("logged").build(),
+            Arrow::builder(n_step)
+                .filename(format!("sim-{photometry}"))
+                .build(),
             "Sim. Logs",
         )
             .into();

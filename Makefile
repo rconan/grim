@@ -9,4 +9,3 @@ push:
 stack:
 	aws s3 cp grim.yaml s3://gmto.modeling/stacks/
 	aws cloudformation create-stack --stack-name grim --template-url https://s3-us-west-2.amazonaws.com/gmto.modeling/stacks/grim.yaml --region us-west-2
-

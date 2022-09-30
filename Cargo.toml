@@ -2,10 +2,9 @@
 name = "grim"
 version = "0.1.0"
 edition = "2021"
-default-run = "main"
 
-[workspace]
-members = ["monte-carlo"]
+#[workspace]
+#members = ["monte-carlo", "windloading", "windloads"]
 
 [dependencies]
 anyhow = "1.0.56"
@@ -24,17 +23,35 @@ env_logger = "0.9.0"
 log = "0.4.16"
 serde-pickle = "1.1.0"
 parse-monitors = "0.1.0"
-fem = { version = "0.3.0", package = "gmt-fem" }
-lom = { version = "0.1.8", package = "gmt-lom" }
-m1-ctrl = "0.1.2"
-fsm = { version = "0.1.0", package = "m2-ctrl" }
 chrono = "0.4.19"
-crseo = "0.4.3"
-dos-actors = { version = "0.1.20", features = ["main", "fem"] }
+crseo = "0.4.5"
+dos-actors = { version = "3.0.1", package = "gmt_dos-actors", path = "../dos-actors" }
 thiserror = "1.0.31"
 flume = "0.10.13"
 csv = "1.1.6"
 serde = { version = "1.0.137", features = ["derive"] }
+windloads = { version = "0.1.0", path = "../dos-actors/clients/windloads", package = "gmt_dos-clients_windloads", features = [
+    "fsm",
+] }
+mount = { version = "0.1.0", path = "../dos-actors/clients/mount", package = "gmt_dos-clients_mount", features = [
+    "s1000d002ze30",
+] }
+arrow = { version = "0.1.0", path = "../dos-actors/clients/arrow", package = "gmt_dos-clients_arrow" }
+m1-ctrl = { version = "0.1.2", path = "../m1-ctrl", features = ["nalgebra"] }
+m2-ctrl = { version = "1.0.0", features = ["fsm"], path = "../m2-ctrl" }
+lom = { version = "1.0.1", package = "gmt-lom", features = [
+    "apache",
+], path = "../gmt-lom" }
+fem = { version = "0.3.0", path = "../fem", package = "gmt-fem", features = [
+    "fsm",
+] }
+crseo-client = { version = "0.1.0", path = "../dos-actors/clients/crseo", package = "gmt_dos-clients_crseo" }
+vec_box = "1.0.0"
+dos-clients_io = { version = "0.1.0", path = "../dos-actors/clients/io", package = "gmt_dos-clients_io" }
 
 [features]
 full = []
+
+[[bin]]
+name = "grim"
+path = "src/bin/main.rs"

@@ -1,159 +1,332 @@
-use crseo::pssn::TelescopeError;
-use crseo::{Diffractive, FromBuilder, Gmt, PSSn, ShackHartmann, Source};
-use dos_actors::{
-    clients::{
-        arrow_client::{Arrow, Get},
-        ceo,
-        gmt_state::GmtState,
-    },
-    prelude::*,
-    Update,
+use std::{env, fs::File, path::Path};
+
+use arrow::Arrow;
+use crseo::{Atmosphere, FromBuilder, Gmt};
+use crseo_client as ceo;
+use crseo_client::{
+    M1modes, M1rbm, M2rbm, OpticalModel, OpticalModelOptions, PSSnFwhm, PSSnOptions,
+    SegmentTipTilt, SegmentWfe, Wavefront, WfeRms,
 };
-use linya::{Bar, Progress};
+use dos_actors::{clients::gmt_state::GmtState, prelude::*};
+// use monte_carlo::MonteCarlo;
+use parse_monitors::cfd;
 use skyangle::Conversion;
-use std::{sync::Arc, time::Duration};
-use tokio::sync::Mutex;
+use vec_box::vec_box;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    let sim_sampling_frequency = 1_000_usize;
+
+    let data_repo_env = env::var("DATA_REPO").expect("DATA_REPO env var is not set");
+    let data_repo = Path::new(&data_repo_env);
+    let job_idx = env::var("AWS_BATCH_JOB_ARRAY_INDEX")
+        .expect("AWS_BATCH_JOB_ARRAY_INDEX env var missing")
+        .parse::<usize>()
+        .expect("AWS_BATCH_JOB_ARRAY_INDEX parsing failed");
+
+    /*     let monte_carlo = MonteCarlo::new(data_repo.join("monte-carlo.csv"), job_idx % 100)?;
+    println!("Monte-Carlo parameters:");
+    println!("{monte_carlo}");
+
+    let data_path = data_repo.join(format!("monte-carlo_{:04}", job_idx));
+    println!("Data repository: {:?}", &data_path);
+
+    let cfd_case = monte_carlo.cfd_case;
+    let cfd_path = cfd::Baseline::<2021>::path().join(cfd_case.clone()); */
+    let cfd_case = "zen30az000_OS7";
+    let cfd_path = cfd::Baseline::<2021>::path().join(cfd_case.clone());
+
+    let sim_sampling_frequency = 1000_usize;
+
+    const CFD_RATE: usize = 1;
     const CFD_DELAY: usize = 10; // seconds
-    const EXPOSURE_RATE: usize = 30_000;
-    let sim_duration = (EXPOSURE_RATE / sim_sampling_frequency) as f64;
-    log::info!("Simulation duration: {:6.3}s", sim_duration);
+    let cfd_sampling_frequency = sim_sampling_frequency / CFD_RATE;
+    println!("CFD CASE ({}Hz): {}", cfd_sampling_frequency, cfd_case);
 
-    let gmt_builder = Gmt::builder().m1_n_mode(162);
-    let bench = ceo::OpticalModel::builder()
-        .gmt(gmt_builder)
-        .source(Source::builder().zenith_azimuth(vec![6f32.from_arcmin()], vec![0f32]))
-        .options(vec![
-            ceo::OpticalModelOptions::ShackHartmann {
-                options: ceo::ShackHartmannOptions::Diffractive(
-                    ShackHartmann::<Diffractive>::builder(),
-                ),
-                flux_threshold: 0.,
-            },
-            /*ceo::OpticalModelOptions::Atmosphere {
-                                    builder: {
-                let atm_duration = 20f32;
-                let atm_n_duration = Some((sim_duration / atm_duration as f64).ceil() as i32);
-                let atm_sampling = 48 * 16 + 1;
-            ATMOSPHERE::new().ray_tracing(
-                            25.5,
-                            atm_sampling,
-                            20f32.from_arcmin(),
-                            atm_duration,
-                            Some("/fsx/atmosphere/atm_15mn.bin".to_owned()),
-                            atm_n_duration,
-                        )},
-                                    time_step: (sim_sampling_frequency as f64).recip(),
-                                },*/
-            ceo::OpticalModelOptions::PSSn(ceo::PSSnOptions::Telescope(
-                PSSn::<TelescopeError>::builder(),
-            )),
-        ])
-        .build()?
-        .into_arcx();
+    const M1_RATE: usize = 10;
+    assert_eq!(sim_sampling_frequency / M1_RATE, 100); // Hz
 
-    (*bench.lock().await).update();
-    let pssn_e = (*bench.lock().await).pssn.as_mut().unwrap().estimates();
-    println!("PSSn: {pssn_e:?}");
+    const SH48_RATE: usize = 30_000;
+    assert_eq!(SH48_RATE / sim_sampling_frequency, 30); // Seconds
 
-    let mut on_axis = Actor::<_, 1, EXPOSURE_RATE>::new(bench.clone()).name("ON-AXIS GMT");
+    const FSM_RATE: usize = 5;
+    assert_eq!(sim_sampling_frequency / FSM_RATE, 200); // Hz
 
-    let n_step = (sim_duration * sim_sampling_frequency as f64) as usize;
+    let n_sh48_exposure = env::var("SH48_N_STEP")?.parse::<usize>()?;
+    let sim_duration = (CFD_DELAY + n_sh48_exposure * SH48_RATE / sim_sampling_frequency) as f64;
+    log::info!(
+        "Simulation duration: {:6.3}s",
+        n_sh48_exposure * SH48_RATE / sim_sampling_frequency
+    );
+    let n_step = n_sh48_exposure * SH48_RATE;
+
     let mut gmt_state: Initiator<_> = Into::<GmtState>::into((
-        Arrow::from_parquet("grim.parquet")?,
+        Arrow::from_parquet(data_path.join("grim.parquet"))?,
         CFD_DELAY * sim_sampling_frequency,
         Some(n_step),
     ))
     .into();
 
-    gmt_state
-        .add_output()
-        .build::<ceo::M1rbm>()
-        .into_input(&mut on_axis);
-    gmt_state
-        .add_output()
-        .build::<ceo::M2rbm>()
-        .into_input(&mut on_axis);
-    gmt_state
-        .add_output()
-        .build::<ceo::M1modes>()
-        .into_input(&mut on_axis);
+    env::set_var("DATA_REPO", &data_path);
 
-    let logs = Arrow::builder(1)
-        .filename("bench.parquet")
-        .build()
-        .into_arcx();
+    let mut options_ref = vec![];
+    let mut options = vec![];
+    if let Ok(_) = env::var("WITH_ATMOSPHERE") {
+        println!("WITH_ATMOSPHERE");
+        let atm_duration = 20f32;
+        let atm_n_duration = Some((sim_duration / atm_duration as f64).ceil() as i32);
+        let atm_sampling = 48 * 16 + 1;
+        let free_atm = Atmosphere::builder()
+            .ray_tracing(
+                25.5,
+                atm_sampling,
+                20f32.from_arcmin(),
+                atm_duration,
+                Some("/fsx/atmosphere/free_atm_15mn.bin".to_owned()),
+                atm_n_duration,
+            )
+            .remove_turbulence_layer(0)
+            // .r0_at_zenith(monte_carlo.r0)
+            // .zenith_angle((90f64 - monte_carlo.elevation).to_radians());
+        let atm = Atmosphere::builder()
+            .ray_tracing(
+                25.5,
+                atm_sampling,
+                20f32.from_arcmin(),
+                atm_duration,
+                Some("/fsx/atmosphere/atm_15mn.bin".to_owned()),
+                atm_n_duration,
+            )
+            // .r0_at_zenith(monte_carlo.r0)
+            // .zenith_angle((90f64 - monte_carlo.elevation).to_radians());
+        let tau = (sim_sampling_frequency as f64).recip();
+        options.push(OpticalModelOptions::Atmosphere {
+            builder: free_atm,
+            time_step: tau,
+        });
 
-    let mut logger = Terminator::<_, EXPOSURE_RATE>::new(logs.clone()).name("Logs");
-    on_axis
-        .add_output()
-        .build::<ceo::WfeRms>()
-        .log(&mut logger)
-        .await
-        .confirm()?
-        .add_output()
-        .build::<ceo::TipTilt>()
-        .log(&mut logger)
-        .await
-        .confirm()?
-        .add_output()
-        .build::<ceo::SegmentWfeRms>()
-        .log(&mut logger)
-        .await
-        .confirm()?
-        .add_output()
-        .build::<ceo::SegmentPiston>()
-        .log(&mut logger)
-        .await
-        .confirm()?
-        .add_output()
-        .build::<ceo::SegmentTipTilt>()
-        .log(&mut logger)
-        .await
-        .confirm()?
-        .add_output()
-        .build::<ceo::PSSn>()
-        .log(&mut logger)
-        .await
-        .confirm()?
-        .add_output()
-        .build::<ceo::DetectorFrame>()
-        .logn(&mut logger, 512 * 512)
-        .await;
+        options_ref.push(OpticalModelOptions::Atmosphere {
+            builder: atm,
+            time_step: tau,
+        })
+    }
+    if let Ok(var) = env::var("WITH_STATIC_ABERRATION") {
+        println!("WITH_STATIC_ABERRATION: {var}");
+        let static_phase: Vec<f32> = bincode::deserialize_from(File::open(var)?)?;
+        options.push(OpticalModelOptions::StaticAberration(static_phase.into()))
+    };
+    if let Ok(_) = env::var("WITH_DOME_SEEING") {
+        println!("WITH_DOME_SEEING");
+        options.push(OpticalModelOptions::DomeSeeing {
+            cfd_case: cfd_path.to_str().unwrap().to_string(),
+            upsampling_rate: (sim_sampling_frequency / 5) as usize,
+        })
+    }
+    let pssn = OpticalModelOptions::PSSn(PSSnOptions::AtmosphereTelescope(crseo::PSSn::builder()));
+    options.push(pssn.clone());
+    options_ref.push(pssn);
 
-    let model = Model::new(vec![
-        Box::new(gmt_state),
-        Box::new(on_axis),
-        Box::new(logger),
-    ])
-    .name("bench")
-    .check()?
-    .flowchart()
-    .run();
+    let photometry = env::var("PHOTOMETRY").unwrap_or("V".to_string());
+    println!("Photometry: {photometry} band");
+    let src = crseo::Source::builder()
+        .pupil_sampling(48 * 16 + 1)
+        .band(photometry.as_str())
+        .field_delaunay21();
+    println!("Sources (zenith[arcmin],azimuth[degree]):");
+    src.zenith
+        .iter()
+        .zip(src.azimuth.iter())
+        .enumerate()
+        .for_each(|(k, (&z, &a))| {
+            println!("{:02}.{:6.2},{:8.2}", k, z.to_arcmin(), a.to_degrees())
+        });
 
-    let progress = Arc::new(Mutex::new(Progress::new()));
-    let onaxis_progress = progress.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(3));
-        let bar: Bar = onaxis_progress
-            .lock()
-            .await
-            .bar(EXPOSURE_RATE, "Bench integration");
-        loop {
-            interval.tick().await;
-            let mut progress = onaxis_progress.lock().await;
-            let n = (*bench.lock().await).sensor.as_ref().unwrap().n_frame();
-            progress.set_and_draw(&bar, n);
-        }
-    });
+    let mut actors: Vec<Box<dyn Task>> = Vec::new();
 
-    model.wait().await?;
+    let mut timer: Initiator<_> = Timer::new(n_step).progress().into();
+    let mut timer_output = timer
+        .add_output()
+        .multiplex(
+            env::var("WITH_REFERENCE_MODEL").map_or(0, |_| 1)
+                + env::var("WITH_SIMULATED_MODEL").map_or(0, |_| 1),
+        )
+        .build::<Tick>();
 
-    let pssn: Vec<Vec<f64>> = (*logs.lock().await).get("PSSn")?;
-    println!("PPSn: {pssn:?}");
+    // Reference model
+    let on_axis_ref_mdl = if let Ok(_) = env::var("WITH_REFERENCE_MODEL") {
+        println!("REFERENCE MODEL");
+        let on_axis_ref_mdl = OpticalModel::builder()
+            .source(src.clone())
+            .options(options_ref)
+            .build()?
+            .into_arcx();
+        let mut on_axis_ref: Actor<_> = Actor::new(on_axis_ref_mdl.clone()).name("Ref. On-Axis");
+        let mut logs_ref: Terminator<_> = (
+            Arrow::builder(n_step)
+                .filename(format!("ref-{photometry}"))
+                .build(),
+            "Ref. Logs",
+        )
+            .into();
+
+        timer_output = timer_output.into_input(&mut on_axis_ref);
+        on_axis_ref
+            .add_output()
+            .unbounded()
+            .build::<WfeRms>()
+            .log(&mut logs_ref)
+            .await;
+        on_axis_ref
+            .add_output()
+            .unbounded()
+            .build::<SegmentWfe>()
+            .log(&mut logs_ref)
+            .await;
+        on_axis_ref
+            .add_output()
+            .unbounded()
+            .build::<SegmentTipTilt>()
+            .log(&mut logs_ref)
+            .await;
+
+        actors.append(&mut vec_box![logs_ref, on_axis_ref]);
+        Some(on_axis_ref_mdl)
+    } else {
+        None
+    };
+
+    // Actual simulated model
+    let on_axis_mdl = if let Ok(_) = env::var("WITH_SIMULATED_MODEL") {
+        println!("SIMULATED MODEL");
+        let on_axis_mdl = OpticalModel::builder()
+            .gmt(Gmt::builder().m1_n_mode(162))
+            .source(src)
+            .options(options)
+            .build()?
+            .into_arcx();
+        let mut on_axis: Actor<_> = Actor::new(on_axis_mdl.clone()).name("Sim. On-Axis");
+
+        let mut logs: Terminator<_> = (
+            Arrow::builder(n_step)
+                .filename(format!("sim-{photometry}"))
+                .build(),
+            "Sim. Logs",
+        )
+            .into();
+
+        gmt_state
+            .add_output()
+            .build::<M1rbm>()
+            .into_input(&mut on_axis)
+            .confirm()?
+            .add_output()
+            .build::<M2rbm>()
+            .into_input(&mut on_axis)
+            .confirm()?
+            .add_output()
+            .build::<M1modes>()
+            .into_input(&mut on_axis)
+            .confirm()?;
+        timer_output = timer_output.into_input(&mut on_axis);
+        on_axis.add_output().build::<WfeRms>().log(&mut logs).await;
+        on_axis
+            .add_output()
+            .build::<SegmentWfe>()
+            .log(&mut logs)
+            .await;
+        on_axis
+            .add_output()
+            .build::<SegmentTipTilt>()
+            .log(&mut logs)
+            .await;
+
+        actors.append(&mut vec_box![logs, gmt_state, on_axis,]);
+        Some(on_axis_mdl)
+    } else {
+        None
+    };
+    timer_output.confirm()?;
+    actors.push(Box::new(timer));
+
+    if actors.is_empty() {
+        panic!("No actors found, select actors by setting the environment variable WITH_REFERENCE_MODE and WITH_SIMULATED_MODEL")
+    }
+
+    Model::new(actors)
+        .name("monte-carlo-bench")
+        .check()?
+        .flowchart()
+        .run()
+        .wait()
+        .await?;
+
+    let mut timer: Initiator<_> = Timer::new(0).into();
+    let mut timer_output = timer
+        .add_output()
+        .multiplex(
+            env::var("WITH_REFERENCE_MODEL").map_or(0, |_| 1)
+                + env::var("WITH_SIMULATED_MODEL").map_or(0, |_| 1),
+        )
+        .build::<Tick>();
+
+    let mut actors: Vec<Box<dyn Task>> = Vec::new();
+
+    if let Ok(_) = env::var("WITH_REFERENCE_MODEL") {
+        let mut on_axis_ref: Actor<_> =
+            Actor::new(on_axis_ref_mdl.as_ref().unwrap().clone()).name("Ref. On-Axis");
+        let mut logs_ref: Terminator<_> = (
+            Arrow::builder(1).filename("ref_pssn-fwhm").build(),
+            "Ref. Logs",
+        )
+            .into();
+        timer_output = timer_output.into_input(&mut on_axis_ref);
+        on_axis_ref
+            .add_output()
+            .bootstrap()
+            .build::<PSSnFwhm>()
+            .log(&mut logs_ref)
+            .await;
+        on_axis_ref
+            .add_output()
+            .bootstrap()
+            .build::<Wavefront>()
+            .log(&mut logs_ref)
+            .await;
+        actors.append(&mut vec_box![logs_ref, on_axis_ref,]);
+    }
+    if let Ok(_) = env::var("WITH_SIMULATED_MODEL") {
+        let mut on_axis: Actor<_> =
+            Actor::new(on_axis_mdl.as_ref().unwrap().clone()).name("Sim. On-Axis");
+        let mut logs: Terminator<_> = (
+            Arrow::builder(1).filename("logged_pssn-fwhm").build(),
+            "Sim. Logs",
+        )
+            .into();
+        timer_output = timer_output.into_input(&mut on_axis);
+        on_axis
+            .add_output()
+            .bootstrap()
+            .build::<PSSnFwhm>()
+            .log(&mut logs)
+            .await;
+        on_axis
+            .add_output()
+            .bootstrap()
+            .build::<Wavefront>()
+            .log(&mut logs)
+            .await;
+        actors.append(&mut vec_box![logs, on_axis,]);
+    }
+    timer_output.confirm()?;
+    actors.push(Box::new(timer));
+
+    Model::new(actors)
+        .name("monte-carlo-bench-final")
+        .check()?
+        .flowchart()
+        .run()
+        .wait()
+        .await?;
+
     Ok(())
 }
